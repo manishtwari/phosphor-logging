@@ -65,7 +65,9 @@ class Manager : public PELInterface
             createPELEntry(entry.first, true);
         }
 
-        setupPELDeleteWatch();
+        // setupPELDeleteWatch();
+        setupPELFileWatch();
+        setupErrorFileWatch();
 
         _dataIface->subscribeToFruPresent(
             "Manager",
@@ -387,21 +389,58 @@ class Manager : public PELInterface
      * @param[in] source - The event source object used
      */
     void pruneRepo(sdeventplus::source::EventBase& source);
-
     /**
-     * @brief Sets up an inotify watch to watch for deleted PEL
-     *        files.  Calls pelFileDeleted() when that occurs.
+     * @brief Sets up an inotify watch to watch for PEL file changes
+     *        Watches IN_DELETE and IN_MOVED_TO only
      */
-    void setupPELDeleteWatch();
+    void setupPELFileWatch();
 
     /**
-     * @brief Called when the inotify watch put on the repository directory
-     *        detects a PEL file was deleted.
+     * @brief Called when inotify detects PEL file changes
+     */
+    void pelFileChanged(sdeventplus::source::IO& io, int fd, uint32_t revents);
+
+    /**
+     * @brief Handles PEL file deletion
+     */
+    void handlePELDelete(const std::string& filename);
+
+    /**
+     * @brief Handles PEL file moved to final location (rsync complete)
+     */
+    void handlePELMovedTo(const std::string& filename);
+
+    /**
+     * @brief Sets up an inotify watch to watch for error entry file changes
+     *        Watches IN_MOVED_TO only (rsync creates error entries)
+     */
+    void setupErrorFileWatch();
+
+    /**
+     * @brief Called when inotify detects error entry file changes
+     */
+    void errorFileChanged(sdeventplus::source::IO& io, int fd,
+                          uint32_t revents);
+
+    /**
+     * @brief Try to link PEL and error entry by creating PELEntry D-Bus object
+     *        Only creates when both PEL and error entry exist
+     */
+    void tryLink(uint32_t obmcLogID);
+
+    /**
+     * @brief Reconciles PELs and error entries after inotify overflow
+     */
+    void reconcileAfterOverflow();
+
+    /**
+     * @brief Update all D-Bus PELEntry properties from the current
+     *        in-memory PELAttributes (used when a PEL is modified on active
+     *        and synced to passive via rsync).
      *
-     * Will tell the Repository class about the deleted PEL, and then tell
-     * the log manager class to delete the corresponding OpenBMC event log.
+     * @param[in] obmcLogID - The OpenBMC log ID of the entry to update
      */
-    void pelFileDeleted(sdeventplus::source::IO& io, int fd, uint32_t revents);
+    void updatePELEntryProperties(uint32_t obmcLogID);
 
     /**
      * @brief Check if the input PEL should cause a quiesce of the system
@@ -586,20 +625,34 @@ class Manager : public PELInterface
     std::unique_ptr<sdeventplus::source::Defer> _obmcLogDeleteEventSource;
 
     /**
-     * @brief The even source for watching for deleted PEL files.
+     * @brief The event source for watching PEL file changes
      */
-    std::unique_ptr<sdeventplus::source::IO> _pelFileDeleteEventSource;
+    std::unique_ptr<sdeventplus::source::IO> _pelFileWatchEventSource;
 
     /**
-     * @brief The file descriptor returned by inotify_init1() used
-     *        for watching for deleted PEL files.
+     * @brief File descriptor from inotify_init1() for PEL watch
      */
-    int _pelFileDeleteFD = -1;
+    int _pelFileWatchFD = -1;
 
     /**
-     * @brief The file descriptor returned by inotify_add_watch().
+     * @brief File descriptor from inotify_add_watch() for PEL watch
      */
-    int _pelFileDeleteWatchFD = -1;
+    int _pelFileWatchWD = -1;
+
+    /**
+     * @brief The event source for watching error entry file changes
+     */
+    std::unique_ptr<sdeventplus::source::IO> _errorFileWatchEventSource;
+
+    /**
+     * @brief File descriptor from inotify_init1() for error watch
+     */
+    int _errorFileWatchFD = -1;
+
+    /**
+     * @brief File descriptor from inotify_add_watch() for error watch
+     */
+    int _errorFileWatchWD = -1;
 };
 
 } // namespace pels

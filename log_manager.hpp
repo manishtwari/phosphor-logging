@@ -1,5 +1,9 @@
 #pragma once
 
+#include "config.h"
+
+#include "bmc_pos_mgr.hpp"
+#include "bmc_pos_path.hpp"
 #include "elog_block.hpp"
 #include "elog_entry.hpp"
 #include "xyz/openbmc_project/Logging/Internal/Manager/server.hpp"
@@ -72,7 +76,13 @@ class Manager : public details::ServerObject<details::ManagerIface>
      */
     Manager(sdbusplus::bus_t& bus, const char* objPath) :
         details::ServerObject<details::ManagerIface>(bus, objPath), busLog(bus),
-        entryId(0), fwVersion(readFWVersion()) {};
+        entryId(0), fwVersion(readFWVersion())
+    {
+        if constexpr (USE_BMC_POS_IN_ID)
+        {
+            bmcPosMgr = std::make_unique<BMCPosMgr>(getBMCPositionFilePath());
+        }
+    };
 
     /*
      * @fn commit()
@@ -110,6 +120,21 @@ class Manager : public details::ServerObject<details::ManagerIface>
      *         representations.
      */
     void restore();
+
+    /** @brief Restore a single error entry from disk into entries map + D-Bus
+     *
+     * @param[in] id - The entry ID to restore
+     * @return bool - true if successfully restored, false otherwise
+     */
+    bool restoreFromDisk(uint32_t id);
+
+    /** @brief Refresh an existing entry from disk (update case)
+     *         If entry doesn't exist, it will restore it.
+     *
+     * @param[in] id - The entry ID to refresh
+     * @return bool - true if successfully refreshed, false otherwise
+     */
+    bool refreshFromDisk(uint32_t id);
 
     /** @brief  Erase all error log entries
      *
@@ -315,6 +340,9 @@ class Manager : public details::ServerObject<details::ManagerIface>
     /** @brief Map of entry id to call back object on properties changed */
     std::map<uint32_t, std::unique_ptr<sdbusplus::bus::match_t>>
         propChangedEntryCallback;
+
+    /** @brief Encodes the BMC position in the entryId when enabled */
+    std::unique_ptr<BMCPosMgr> bmcPosMgr;
 };
 
 } // namespace internal

@@ -23,6 +23,8 @@ openpower_pels = {
     'pce_identity': {},
     'pel_manager': {
         'sources': [
+            '../../bmc_pos_mgr.cpp',
+            '../../bmc_pos_path.cpp',
             '../../elog_entry.cpp',
             '../../elog_meta.cpp',
             '../../elog_serialize.cpp',

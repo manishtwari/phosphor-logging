@@ -9,6 +9,13 @@ option(
 
 option('yamldir', type: 'string', description: 'Path to YAML')
 option(
+    'auditlog',
+    type: 'feature',
+    value: 'disabled',
+    description: 'Enable D-Bus Audit Log service',
+)
+
+option(
     'callout_yaml',
     type: 'string',
     value: 'callouts/callouts-example.yaml',
@@ -47,4 +54,11 @@ option(
     type: 'combo',
     choices: ['dbus', 'journal', 'both'],
     value: 'both',
+)
+
+option(
+    'use-bmc-pos-in-id',
+    type: 'boolean',
+    value: true,
+    description: 'If the BMC position should be encoded into the event log ID',
 )
