@@ -17,7 +17,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
-
+#include <iostream>
 #include <phosphor-logging/lg2.hpp>
 #include <xyz/openbmc_project/Common/File/error.hpp>
 
@@ -74,6 +74,326 @@ Repository::Repository(const std::filesystem::path& basePath, size_t repoSize,
     }
 
     restore();
+}
+
+// void Repository::restore()
+// {
+//     for (auto& dirEntry : fs::directory_iterator(_logPath))
+//     {
+//         try
+//         {
+//             if (!fs::is_regular_file(dirEntry.path()))
+//             {
+//                 continue;
+//             }
+
+//             restoreSinglePEL(dirEntry.path());
+//         }
+//         catch (const std::exception& e)
+//         {
+//             lg2::error("Hit exception while restoring PEL file {FILE}: {ERROR}",
+//                        "FILE", dirEntry.path(), "ERROR", e);
+//         }
+//     }
+// }
+
+// bool Repository::restoreSinglePEL(const std::filesystem::path& path)
+// {
+//     try
+//     {
+//         std::ifstream file{path};
+//         std::vector<uint8_t> data{std::istreambuf_iterator<char>(file),
+//                                   std::istreambuf_iterator<char>()};
+//         file.close();
+
+//         PEL pel{data};
+//         if (!pel.valid())
+//         {
+//             lg2::error("Found invalid PEL file {FILE}. Removing.", "FILE", path);
+//             fs::remove(path);
+//             return false;
+//         }
+
+//         // If the host hasn't acked it, reset the host state so
+//         // it will get sent up again.
+//         if (pel.hostTransmissionState() == TransmissionState::sent)
+//         {
+//             pel.setHostTransmissionState(TransmissionState::newPEL);
+//             try
+//             {
+//                 write(pel, path);
+//             }
+//             catch (const std::exception& e)
+//             {
+//                 lg2::error(
+//                     "Failed to save PEL after updating host state, PEL ID = {ID}",
+//                     "ID", lg2::hex, pel.id());
+//             }
+//         }
+
+//         PELAttributes attributes{
+//             path,
+//             getFileDiskSize(path),
+//             pel.privateHeader().creatorID(),
+//             pel.userHeader().subsystem(),
+//             pel.userHeader().severity(),
+//             pel.userHeader().actionFlags(),
+//             pel.hostTransmissionState(),
+//             pel.hmcTransmissionState(),
+//             pel.plid(),
+//             pel.getDeconfigFlag(),
+//             pel.getGuardFlag(),
+//             getMillisecondsSinceEpoch(pel.privateHeader().createTimestamp())};
+
+//         using pelID = LogID::Pel;
+//         using obmcID = LogID::Obmc;
+//         _pelAttributes.emplace(LogID(pelID(pel.id()), obmcID(pel.obmcLogID())),
+//                               attributes);
+
+//         updateRepoStats(attributes, true);
+        
+//         return true;
+//     }
+//     catch (const std::exception& e)
+//     {
+//         lg2::error("Exception restoring PEL from {FILE}: {ERROR}",
+//                    "FILE", path, "ERROR", e);
+//         return false;
+//     }
+// }
+
+// std::optional<Repository::LogID>
+// Repository::importOrUpdateFromPELFile(const std::filesystem::path& path,
+//                                       bool callAddCallbacks)
+// {
+//     namespace fs = std::filesystem;
+
+//     // auto dumpAttrs = [this](const char* stage)
+//     // {
+//         // lg2::info("---- importOrUpdateFromPELFile state: {STAGE} ----",
+//                 //   "STAGE", stage);
+//         // lg2::info("_pelAttributes map size: {SIZE}",
+//                 //   "SIZE", _pelAttributes.size());
+
+//         // size_t count = 0;
+//         // for (const auto& [logId, attrs] : _pelAttributes)
+//         // {
+//             // lg2::info(
+//             //     "_pelAttributes[{COUNT}]: PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}, PATH={PATH}",
+//             //     "COUNT", count++,
+//             //     "PEL_ID", lg2::hex, logId.pelID.id,
+//             //     "OBMC_ID", lg2::hex, logId.obmcID.id,
+//             //     "PATH", attrs.path.string());
+//         // }
+//     // };
+
+//     // lg2::info("=== importOrUpdateFromPELFile START: {FILE} ===",
+//     //           "FILE", path.string());
+//     // dumpAttrs("before import/update");
+
+//     if (!fs::exists(path) || !fs::is_regular_file(path))
+//     {
+//         lg2::error("PEL file missing or not regular: {FILE}",
+//                    "FILE", path.string());
+//         return std::nullopt;
+//     }
+
+//     std::ifstream file{path, std::ios::in | std::ios::binary};
+//     if (!file.good())
+//     {
+//         lg2::error("Failed to open PEL file: {FILE}",
+//                    "FILE", path.string());
+//         return std::nullopt;
+//     }
+
+//     std::vector<uint8_t> data{std::istreambuf_iterator<char>(file),
+//                               std::istreambuf_iterator<char>()};
+//     file.close();
+
+//     // lg2::info("Read PEL file bytes: {SIZE}",
+//     //           "SIZE", data.size());
+
+//     PEL pel{data};
+//     if (!pel.valid())
+//     {
+//         lg2::error("Invalid PEL file in importOrUpdateFromPELFile: {FILE}",
+//                    "FILE", path.string());
+//         return std::nullopt;
+//     }
+
+//     LogID newKey{LogID::Pel{pel.id()}, LogID::Obmc{pel.obmcLogID()}};
+
+//     // lg2::info("Parsed PEL file: PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}, PLID={PLID}",
+//     //           "PEL_ID", lg2::hex, pel.id(),
+//     //           "OBMC_ID", lg2::hex, pel.obmcLogID(),
+//     //           "PLID", lg2::hex, pel.plid());
+
+//     PELAttributes attrs{
+//         path,
+//         getFileDiskSize(path),
+//         pel.privateHeader().creatorID(),
+//         pel.userHeader().subsystem(),
+//         pel.userHeader().severity(),
+//         pel.userHeader().actionFlags(),
+//         pel.hostTransmissionState(),
+//         pel.hmcTransmissionState(),
+//         pel.plid(),
+//         pel.getDeconfigFlag(),
+//         pel.getGuardFlag(),
+//         getMillisecondsSinceEpoch(pel.privateHeader().createTimestamp()),
+//     };
+
+//     // Find by PEL ID (stable key)
+//     auto it = findPEL(LogID{LogID::Pel{pel.id()}});
+//     if (it == _pelAttributes.end())
+//     {
+//         // lg2::info("PEL not found in repository. Adding new entry: PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}",
+//         //           "PEL_ID", lg2::hex, pel.id(),
+//         //           "OBMC_ID", lg2::hex, pel.obmcLogID());
+
+//         _pelAttributes.emplace(newKey, attrs);
+//         updateRepoStats(attrs, true);
+//         _lastPelID = std::max(_lastPelID, pel.id());
+
+//         if (callAddCallbacks)
+//         {
+//             // lg2::info("Calling add callbacks for PEL_ID={PEL_ID}",
+//             //           "PEL_ID", lg2::hex, pel.id());
+//             processAddCallbacks(pel);
+//         }
+//         else
+//         {
+//             // lg2::info("Skipping add callbacks for PEL_ID={PEL_ID}",
+//             //           "PEL_ID", lg2::hex, pel.id());
+//         }
+
+//         // dumpAttrs("after add");
+//         // lg2::info("=== importOrUpdateFromPELFile END (ADDED) ===");
+//         return newKey;
+//     }
+
+//     // lg2::info("Found existing repository entry: OLD_PEL_ID={OLD_PEL_ID}, OLD_OBMC_ID={OLD_OBMC_ID}",
+//     //           "OLD_PEL_ID", lg2::hex, it->first.pelID.id,
+//     //           "OLD_OBMC_ID", lg2::hex, it->first.obmcID.id);
+
+//     // Remove old stats before replacing attributes
+//     updateRepoStats(it->second, false);
+
+//     // If OBMC ID changed, re-key using node extraction
+//     if (it->first.obmcID.id != pel.obmcLogID())
+//     {
+//         // lg2::info("OBMC_ID changed for existing PEL. Rekeying: PEL_ID={PEL_ID}, OLD_OBMC_ID={OLD_OBMC_ID}, NEW_OBMC_ID={NEW_OBMC_ID}",
+//         //           "PEL_ID", lg2::hex, pel.id(),
+//         //           "OLD_OBMC_ID", lg2::hex, it->first.obmcID.id,
+//         //           "NEW_OBMC_ID", lg2::hex, pel.obmcLogID());
+
+//         auto node = _pelAttributes.extract(it);
+//         node.key() = newKey;
+//         node.mapped() = attrs;
+//         _pelAttributes.insert(std::move(node));
+//     }
+//     else
+//     {
+//         // lg2::info("Updating existing entry in place: PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}",
+//         //           "PEL_ID", lg2::hex, pel.id(),
+//         //           "OBMC_ID", lg2::hex, pel.obmcLogID());
+
+//         const_cast<PELAttributes&>(it->second) = attrs;
+//     }
+
+//     updateRepoStats(attrs, true);
+//     _lastPelID = std::max(_lastPelID, pel.id());
+
+//     // dumpAttrs("after update");
+//     // lg2::info("=== importOrUpdateFromPELFile END (UPDATED) ===");
+//     return newKey;
+// }
+
+std::optional<Repository::LogID>
+Repository::importOrUpdateFromPELFile(const std::filesystem::path& path,
+                                      bool callAddCallbacks)
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(path) || !fs::is_regular_file(path))
+    {
+        lg2::error("PEL file missing or not regular: {FILE}",
+                   "FILE", path.string());
+        return std::nullopt;
+    }
+
+    std::ifstream file{path, std::ios::in | std::ios::binary};
+    if (!file.good())
+    {
+        lg2::error("Failed to open PEL file: {FILE}",
+                   "FILE", path.string());
+        return std::nullopt;
+    }
+
+    std::vector<uint8_t> data{std::istreambuf_iterator<char>(file),
+                              std::istreambuf_iterator<char>()};
+
+    PEL pel{data};
+    if (!pel.valid())
+    {
+        lg2::error("Invalid PEL file in importOrUpdateFromPELFile: {FILE}",
+                   "FILE", path.string());
+        return std::nullopt;
+    }
+
+    LogID newKey{LogID::Pel{pel.id()}, LogID::Obmc{pel.obmcLogID()}};
+
+    PELAttributes attrs{
+        path,
+        getFileDiskSize(path),
+        pel.privateHeader().creatorID(),
+        pel.userHeader().subsystem(),
+        pel.userHeader().severity(),
+        pel.userHeader().actionFlags(),
+        pel.hostTransmissionState(),
+        pel.hmcTransmissionState(),
+        pel.plid(),
+        pel.getDeconfigFlag(),
+        pel.getGuardFlag(),
+        getMillisecondsSinceEpoch(pel.privateHeader().createTimestamp()),
+    };
+
+    // Find by PEL ID (stable key)
+    auto it = findPEL(LogID{LogID::Pel{pel.id()}});
+    if (it == _pelAttributes.end())
+    {
+        _pelAttributes.emplace(newKey, attrs);
+        updateRepoStats(attrs, true);
+        _lastPelID = std::max(_lastPelID, pel.id());
+
+        if (callAddCallbacks)
+        {
+            processAddCallbacks(pel);
+        }
+
+        return newKey;
+    }
+
+    // Remove old stats before replacing attributes
+    updateRepoStats(it->second, false);
+
+    // If OBMC ID changed, re-key using node extraction
+    if (it->first.obmcID.id != pel.obmcLogID())
+    {
+        auto node = _pelAttributes.extract(it);
+        node.key() = newKey;
+        node.mapped() = attrs;
+        _pelAttributes.insert(std::move(node));
+    }
+    else
+    {
+        const_cast<PELAttributes&>(it->second) = attrs;
+    }
+
+    updateRepoStats(attrs, true);
+    _lastPelID = std::max(_lastPelID, pel.id());
+
+    return newKey;
 }
 
 void Repository::restore()
@@ -236,12 +556,15 @@ void Repository::write(const PEL& pel, const fs::path& path)
 std::optional<Repository::LogID> Repository::remove(const LogID& id)
 {
     auto pel = findPEL(id);
+
     if (pel == _pelAttributes.end())
     {
+        lg2::info("Repository::remove could not find requested PEL");
         return std::nullopt;
     }
 
     LogID actualID = pel->first;
+
     updateRepoStats(pel->second, false);
 
     lg2::debug(

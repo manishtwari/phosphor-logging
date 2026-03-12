@@ -226,6 +226,31 @@ auto Manager::createEntry(std::string errMsg, Entry::Level errLvl,
         }
     }
 
+    if constexpr (USE_BMC_POS_IN_ID)
+    {
+        if (!bmcPosMgr->isPositionValid())
+        {
+            // In case position is now available check again.
+            bmcPosMgr->readBMCPosition();
+
+            if (bmcPosMgr->isPositionValid())
+            {
+                // Find last ID used of this new position.
+                entryId = 0;
+                for (auto id : std::views::keys(entries))
+                {
+                    if (bmcPosMgr->idContainsCurrentPosition(id))
+                    {
+                        entryId = std::max(entryId, id);
+                    }
+                }
+            }
+        }
+
+        // Fold the position into the ID
+        entryId = bmcPosMgr->processEntryId(entryId);
+    }
+
     entryId++;
     if (errLvl >= Entry::sevLowerLimit)
     {
@@ -519,13 +544,15 @@ size_t Manager::eraseAll()
         }
         catch (const std::exception& e)
         {
-            lg2::error("An extension's LogIDWithHwIsolation function threw an "
-                       "exception: {ERROR}",
-                       "ERROR", e);
+            lg2::error(
+                "An extension's LogIDWithHwIsolation function threw an exception: {ERROR}",
+                "ERROR", e);
         }
     }
+
     size_t entriesSize = entries.size();
     auto iter = entries.begin();
+
     if (logIDWithHwIsolation.empty())
     {
         while (iter != entries.end())
@@ -534,43 +561,63 @@ size_t Manager::eraseAll()
             ++iter;
             erase(e);
         }
+
+        // All gone.
         entryId = 0;
+        return entriesSize;
     }
-    else
+
+    while (iter != entries.end())
     {
-        while (iter != entries.end())
+        auto e = iter->first;
+        ++iter;
+
+        try
         {
-            auto e = iter->first;
-            ++iter;
-            try
+            if (!std::ranges::contains(logIDWithHwIsolation, e))
             {
-                if (!std::ranges::contains(logIDWithHwIsolation, e))
-                {
-                    erase(e);
-                }
-                else
-                {
-                    entriesSize--;
-                }
+                erase(e);
             }
-            catch (const sdbusplus::xyz::openbmc_project::Common::Error::
-                       Unavailable& e)
+            else
             {
+                // Kept due to HW isolation.
                 entriesSize--;
             }
         }
-        if (!entries.empty())
+        catch (const sdbusplus::xyz::openbmc_project::Common::Error::Unavailable&)
         {
-            entryId = std::ranges::max_element(entries, [](const auto& a,
-                                                           const auto& b) {
-                          return a.first < b.first;
-                      })->first;
-        }
-        else
-        {
-            entryId = 0;
+            // Kept due to delete prohibited.
+            entriesSize--;
         }
     }
+
+    // ---- FIX: recompute last ID safely for this BMC ----
+    if (entries.empty())
+    {
+        entryId = 0;
+    }
+    else if constexpr (!USE_BMC_POS_IN_ID)
+    {
+        entryId = std::ranges::max_element(
+                      entries,
+                      [](const auto& a, const auto& b) { return a.first < b.first; })
+                      ->first;
+    }
+    else
+    {
+        // Find the largest ID just from this BMC's entries (ignore remote prefix).
+        entryId = 0;
+        for (auto id : std::views::keys(entries))
+        {
+            if (bmcPosMgr->idContainsCurrentPosition(id))
+            {
+                entryId = std::max(entryId, id);
+            }
+        }
+        lg2::debug("eraseAll(): last entry ID for this BMC is {ID}", "ID", entryId);
+    }
+    // ----------------------------------------------------
+
     return entriesSize;
 }
 
@@ -662,8 +709,17 @@ void Manager::restore()
 
     for (auto& file : fs::directory_iterator(dir))
     {
-        auto id = file.path().filename().c_str();
-        auto idNum = std::stol(id);
+
+        // auto id = file.path().filename().c_str();
+
+        const auto id = file.path().filename().string();
+        const uint32_t idNum = std::stoul(id);
+
+
+        lg2::info("Restoring entry from disk with ID {ID}", "ID", id);
+
+        lg2::info("Restoring entry from disk with ID 2nd time {ID_NUM}", "ID_NUM", idNum);
+
         auto e = std::make_unique<Entry>(
             busLog, std::string(OBJ_ENTRY) + '/' + id, idNum, *this);
         if (deserialize(file.path(), *e))
@@ -693,11 +749,306 @@ void Manager::restore()
         }
     }
 
-    if (!entries.empty())
+    if constexpr (!USE_BMC_POS_IN_ID)
     {
-        entryId = entries.rbegin()->first;
+        if (!entries.empty())
+        {
+            entryId = entries.rbegin()->first;
+        }
+    }
+    else
+    {
+        // Find the largest ID just from this BMC's entries.
+        entryId = 0;
+        for (auto id : std::views::keys(entries))
+        {
+            if (bmcPosMgr->idContainsCurrentPosition(id))
+            {
+                entryId = std::max(entryId, id);
+            }
+        }
+        lg2::debug("Last entry ID for this BMC is {ID}", "ID", entryId);
     }
 }
+
+// bool Manager::restoreFromDisk(uint32_t id)
+// {
+//     if (entries.find(id) != entries.end())
+//     {
+//         return true;
+//     }
+
+//     fs::path path = paths::error() / std::to_string(id);
+//     if (!fs::exists(path) || !fs::is_regular_file(path))
+//     {
+//         return false;
+//     }
+
+//     lg2::info("path to restore from disk: {PATH}", "PATH", path);
+
+//     auto objPath = std::string(OBJ_ENTRY) + "/" + std::to_string(id);
+//     auto e = std::make_unique<Entry>(busLog, objPath, id, *this);
+
+//     lg2::info("Restoring entry from disk with ID {ID}", "ID", id);
+
+//     if (!deserialize(path, *e))
+//     {
+//         return false;
+//     }
+
+//     if (e->id() != id)
+//     {
+//         lg2::error("Sanity check failed while restoring entry {ID}", "ID", id);
+//         return false;
+//     }
+
+//     e->path(path, true);
+
+//     auto [it, inserted] = entries.emplace(id, std::move(e));
+//     it->second->emit_object_added();
+
+//     lg2::info("Emitted object added signal for restored entry with ID {ID}", "ID", id);
+
+//     if (e->severity() >= Entry::sevLowerLimit)
+//     {
+//         infoErrors.push_back(id);
+//     }
+//     else
+//     {
+//         realErrors.push_back(id);
+//     }
+
+//     // entries.emplace(id, std::move(e));
+
+//     // FIX: Only update entryId if this ID belongs to current BMC
+//     if constexpr (USE_BMC_POS_IN_ID)
+//     {
+//         if (bmcPosMgr->idContainsCurrentPosition(id))
+//         {
+//             entryId = std::max(entryId, id);
+//         }
+//     }
+//     else
+//     {
+//         entryId = std::max(entryId, id);
+//     }
+
+//     return true;
+// }
+
+bool Manager::restoreFromDisk(uint32_t id)
+{
+    if (entries.find(id) != entries.end())
+    {
+        return true;
+    }
+
+    fs::path path = paths::error() / std::to_string(id);
+    if (!fs::exists(path) || !fs::is_regular_file(path))
+    {
+        return false;
+    }
+
+    lg2::info("path to restore from disk: {PATH}", "PATH", path);
+
+    auto objPath = std::string(OBJ_ENTRY) + "/" + std::to_string(id);
+    auto e = std::make_unique<Entry>(busLog, objPath, id, *this);
+
+    lg2::info("Restoring entry from disk with ID {ID}", "ID", id);
+
+    if (!deserialize(path, *e))
+    {
+        return false;
+    }
+
+    if (e->id() != id)
+    {
+        lg2::error("Sanity check failed while restoring entry {ID}", "ID", id);
+        return false;
+    }
+
+    e->path(path, true);
+
+    // Decide bucket BEFORE move
+    const auto sev = e->severity();
+    if (sev >= Entry::sevLowerLimit)
+    {
+        infoErrors.push_back(id);
+    }
+    else
+    {
+        realErrors.push_back(id);
+    }
+
+    [[maybe_unused]]auto [it, inserted] = entries.emplace(id, std::move(e));
+    it->second->emit_object_added();
+
+    lg2::info("Emitted object added signal for restored entry with ID {ID}",
+              "ID", id);
+
+    if constexpr (USE_BMC_POS_IN_ID)
+    {
+        if (bmcPosMgr->idContainsCurrentPosition(id))
+        {
+            entryId = std::max(entryId, id);
+        }
+    }
+    else
+    {
+        entryId = std::max(entryId, id);
+    }
+
+    return true;
+}
+
+bool Manager::refreshFromDisk(uint32_t id)
+{
+    auto it = entries.find(id);
+    if (it == entries.end())
+    {
+        return restoreFromDisk(id);
+    }
+
+    fs::path path = paths::error() / std::to_string(id);
+    if (!fs::exists(path) || !fs::is_regular_file(path))
+    {
+        return false;
+    }
+
+    auto eraseOnce = [](std::list<uint32_t>& lst, uint32_t v) {
+        auto p = std::find(lst.begin(), lst.end(), v);
+        if (p != lst.end())
+        {
+            lst.erase(p);
+        }
+    };
+    eraseOnce(infoErrors, id);
+    eraseOnce(realErrors, id);
+
+    if (!deserialize(path, *(it->second)))
+    {
+        return false;
+    }
+
+    it->second->path(path, true);
+
+    if (it->second->severity() >= Entry::sevLowerLimit)
+    {
+        infoErrors.push_back(id);
+    }
+    else
+    {
+        realErrors.push_back(id);
+    }
+
+
+    // REMOVED: entryId = std::max(entryId, id);
+    // Not needed - entry already exists, ID already accounted for
+    
+    // FIX: Only update entryId if this ID belongs to current BMC
+    // if constexpr (USE_BMC_POS_IN_ID)
+    // {
+    //     if (bmcPosMgr->idContainsCurrentPosition(id))
+    //     {
+    //         entryId = std::max(entryId, id);
+    //     }
+    // }
+    // else
+    // {
+    //     entryId = std::max(entryId, id);
+    // }
+
+    return true;
+}
+
+// bool Manager::restoreFromDisk(uint32_t id)
+// {
+//     if (entries.find(id) != entries.end())
+//     {
+//         return true;
+//     }
+
+//     fs::path path = paths::error() / std::to_string(id);
+//     if (!fs::exists(path) || !fs::is_regular_file(path))
+//     {
+//         return false;
+//     }
+
+//     auto objPath = std::string(OBJ_ENTRY) + "/" + std::to_string(id);
+//     auto e = std::make_unique<Entry>(busLog, objPath, id, *this);
+
+//     if (!deserialize(path, *e))
+//     {
+//         return false;
+//     }
+
+//     // Sanity check
+//     if (e->id() != id)
+//     {
+//         lg2::error("Sanity check failed while restoring entry {ID}", "ID",
+//         id); return false;
+//     }
+
+//     e->path(path, true);
+
+//     // Keep severity lists consistent
+//     if (e->severity() >= Entry::sevLowerLimit)
+//     {
+//         infoErrors.push_back(id);
+//     }
+//     else
+//     {
+//         realErrors.push_back(id);
+//     }
+
+//     entries.emplace(id, std::move(e));
+//     entryId = std::max(entryId, id);
+//     return true;
+// }
+
+// bool Manager::refreshFromDisk(uint32_t id)
+// {
+//     auto it = entries.find(id);
+//     if (it == entries.end())
+//     {
+//         return restoreFromDisk(id);
+//     }
+
+//     fs::path path = paths::error() / std::to_string(id);
+//     if (!fs::exists(path) || !fs::is_regular_file(path))
+//     {
+//         return false;
+//     }
+
+//     auto eraseOnce = [](std::list<uint32_t>& lst, uint32_t v) {
+//         auto p = std::find(lst.begin(), lst.end(), v);
+//         if (p != lst.end())
+//         {
+//             lst.erase(p);
+//         }
+//     };
+//     eraseOnce(infoErrors, id);
+//     eraseOnce(realErrors, id);
+
+//     if (!deserialize(path, *(it->second)))
+//     {
+//         return false;
+//     }
+
+//     it->second->path(path, true);
+
+//     if (it->second->severity() >= Entry::sevLowerLimit)
+//     {
+//         infoErrors.push_back(id);
+//     }
+//     else
+//     {
+//         realErrors.push_back(id);
+//     }
+
+//     entryId = std::max(entryId, id);
+//     return true;
+// }
 
 std::string Manager::readFWVersion()
 {

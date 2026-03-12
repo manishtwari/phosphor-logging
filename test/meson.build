@@ -24,6 +24,7 @@ if get_option('openpower-pel-extension').allowed()
 endif
 
 tests = [
+    'bmc_pos_mgr_test',
     'extensions_test',
     'log_manager_dbus_tests',
     'remote_logging_test_address',
@@ -39,7 +40,9 @@ foreach t : tests
         executable(
             'test-' + t.underscorify(),
             t + '.cpp',
+            'bmc_pos_path.cpp',
             'common.cpp',
+            'test_environment.cpp',
             log_manager_sources,
             '../phosphor-rsyslog-config/server-conf.cpp',
             dependencies: [
@@ -66,7 +69,9 @@ foreach t : tests_non_parallel
         executable(
             'test-' + t.underscorify(),
             t + '.cpp',
+            'bmc_pos_path.cpp',
             'common.cpp',
+            'test_environment.cpp',
             log_manager_sources,
             '../phosphor-rsyslog-config/server-conf.cpp',
             dependencies: [

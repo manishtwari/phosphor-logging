@@ -148,6 +148,9 @@ log_manager_ext_args = []
 
 subdir('extensions')
 subdir('phosphor-rsyslog-config')
+if (get_option('auditlog').allowed())
+    subdir('phosphor-auditlog')
+endif
 
 # Generate daemon.
 log_manager_sources = [
@@ -156,6 +159,7 @@ log_manager_sources = [
     elog_lookup_gen,
     elog_process_gen,
     files(
+        'bmc_pos_mgr.cpp',
         'elog_entry.cpp',
         'elog_meta.cpp',
         'elog_serialize.cpp',
@@ -177,6 +181,7 @@ executable(
     'phosphor-log-manager',
     log_manager_sources,
     log_manager_ext_sources,
+    'bmc_pos_path.cpp',
     'log_manager_main.cpp',
     include_directories: include_directories('gen'),
     cpp_args: log_manager_ext_args,

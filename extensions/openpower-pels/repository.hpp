@@ -469,6 +469,33 @@ class Repository
      */
     bool updatePEL(const std::filesystem::path& path, PELUpdateFunc updateFunc);
 
+        /**
+     * @brief Restores a single PEL from a file path
+     *        Used both at startup and when new PELs are detected via inotify
+     *
+     * @param[in] path - The path to the PEL file
+     * @return bool - true if successfully restored, false otherwise
+     */
+    bool restoreSinglePEL(const std::filesystem::path& path);
+
+    /**
+     * @brief Import (new) or refresh (existing) attributes from a PEL file
+     *        that already exists on disk (e.g., rsync delivered).
+     *
+     * This method reads a PEL file, validates it, and either:
+     * - Adds it to the repository if it's new
+     * - Updates existing entry if PEL ID already exists
+     *
+     * @param[in] path - The path to the PEL file
+     * @param[in] callAddCallbacks - Whether to call add callbacks (default: false)
+     *                               Set to false to avoid host notifier side-effects
+     *                               for synced PELs
+     * @return std::optional<LogID> - The LogID if successful, nullopt otherwise
+     */
+    std::optional<LogID> importOrUpdateFromPELFile(
+        const std::filesystem::path& path,
+        bool callAddCallbacks = false);
+
   private:
     /**
      * @brief Finds an entry in the _pelAttributes map.
