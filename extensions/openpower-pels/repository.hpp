@@ -135,9 +135,9 @@ class Repository
     Repository() = delete;
     ~Repository() = default;
     Repository(const Repository&) = default;
-    Repository& operator=(const Repository&) = default;
-    Repository(Repository&&) = default;
-    Repository& operator=(Repository&&) = default;
+    Repository& operator=(const Repository&) = delete;
+    Repository(Repository&&) = delete;
+    Repository& operator=(Repository&&) = delete;
 
     /**
      * @brief Constructor
@@ -468,6 +468,22 @@ class Repository
      * @return bool - If the PEL was updated or not.
      */
     bool updatePEL(const std::filesystem::path& path, PELUpdateFunc updateFunc);
+
+        /**
+     * @brief Import (new) or refresh (existing) attributes from a PEL file
+     *        that already exists on disk (e.g., rsync delivered).
+     *
+     * This method reads a PEL file, validates it, and either:
+     * - Adds it to the repository if it's new
+     * - Updates existing entry if PEL ID already exists
+     *
+     * @param[in] path - The path to the PEL file
+     * @param[in] callAddCallbacks - Whether to call add callbacks (default:
+     * false) Set to false to avoid host notifier side-effects for synced PELs
+     * @return std::optional<LogID> - The LogID if successful, nullopt otherwise
+     */
+    std::optional<LogID> importOrUpdateFromPELFile(
+        const std::filesystem::path& path, bool callAddCallbacks = false);
 
   private:
     /**

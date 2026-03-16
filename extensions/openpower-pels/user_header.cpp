@@ -1,18 +1,6 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
+
 #include "user_header.hpp"
 
 #include "json_utils.hpp"
@@ -21,9 +9,6 @@
 #include "severity.hpp"
 
 #include <phosphor-logging/lg2.hpp>
-
-#include <format>
-#include <iostream>
 
 namespace openpower
 {
@@ -63,7 +48,7 @@ UserHeader::UserHeader(const message::Entry& entry,
     auto ss = additionalData.getValue("PEL_SUBSYSTEM");
     if (ss)
     {
-        auto eventSubsystem = std::stoul(*ss, NULL, 16);
+        auto eventSubsystem = std::stoul(*ss, nullptr, 16);
         std::string subsystemString =
             pv::getValue(eventSubsystem, pel_values::subsystemValues);
         if (subsystemString == "invalid")
@@ -90,7 +75,7 @@ UserHeader::UserHeader(const message::Entry& entry,
     {
         // Gotta use something, how about 'others'.
         lg2::warning(
-            "No PEL subystem value supplied for error, using 'others'");
+            "No PEL subsystem value supplied for error, using 'others'");
         _eventSubsystem = 0x70;
     }
 

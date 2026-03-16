@@ -1,19 +1,9 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
+
 #include "repository.hpp"
+
+#include "pel_values.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -157,6 +147,91 @@ void Repository::restore()
     }
 }
 
+std::optional<Repository::LogID> Repository::importOrUpdateFromPELFile(
+    const std::filesystem::path& path, bool callAddCallbacks)
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(path) || !fs::is_regular_file(path))
+    {
+        lg2::error("PEL file missing or not regular: {FILE}", "FILE",
+                   path.string());
+        return std::nullopt;
+    }
+
+    std::ifstream file{path, std::ios::in | std::ios::binary};
+    if (!file.good())
+    {
+        lg2::error("Failed to open PEL file: {FILE}", "FILE", path.string());
+        return std::nullopt;
+    }
+
+    std::vector<uint8_t> data{std::istreambuf_iterator<char>(file),
+                              std::istreambuf_iterator<char>()};
+
+    PEL pel{data};
+    if (!pel.valid())
+    {
+        lg2::error("Invalid PEL file in importOrUpdateFromPELFile: {FILE}",
+                   "FILE", path.string());
+        return std::nullopt;
+    }
+
+    LogID newKey{LogID::Pel{pel.id()}, LogID::Obmc{pel.obmcLogID()}};
+
+    PELAttributes attrs{
+        path,
+        getFileDiskSize(path),
+        pel.privateHeader().creatorID(),
+        pel.userHeader().subsystem(),
+        pel.userHeader().severity(),
+        pel.userHeader().actionFlags(),
+        pel.hostTransmissionState(),
+        pel.hmcTransmissionState(),
+        pel.plid(),
+        pel.getDeconfigFlag(),
+        pel.getGuardFlag(),
+        getMillisecondsSinceEpoch(pel.privateHeader().createTimestamp()),
+    };
+
+    // Find by PEL ID (stable key)
+    auto it = findPEL(LogID{LogID::Pel{pel.id()}});
+    if (it == _pelAttributes.end())
+    {
+        _pelAttributes.emplace(newKey, attrs);
+        updateRepoStats(attrs, true);
+        _lastPelID = std::max(_lastPelID, pel.id());
+
+        if (callAddCallbacks)
+        {
+            processAddCallbacks(pel);
+        }
+
+        return newKey;
+    }
+
+    // Remove old stats before replacing attributes
+    updateRepoStats(it->second, false);
+
+    // If OBMC ID changed, re-key using node extraction
+    if (it->first.obmcID.id != pel.obmcLogID())
+    {
+        auto node = _pelAttributes.extract(it);
+        node.key() = newKey;
+        node.mapped() = attrs;
+        _pelAttributes.insert(std::move(node));
+    }
+    else
+    {
+        const_cast<PELAttributes&>(it->second) = attrs;
+    }
+
+    updateRepoStats(attrs, true);
+    _lastPelID = std::max(_lastPelID, pel.id());
+
+    return newKey;
+}
+
 std::string Repository::getPELFilename(uint32_t pelID, const BCDTime& time)
 {
     char name[50];
@@ -250,7 +325,7 @@ std::optional<Repository::LogID> Repository::remove(const LogID& id)
 
     if (fs::exists(pel->second.path))
     {
-        // Check for existense of new archive folder
+        // Check for existence of new archive folder
         if (!fs::exists(_archivePath))
         {
             fs::create_directories(_archivePath);

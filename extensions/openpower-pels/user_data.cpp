@@ -1,30 +1,14 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
+
 #include "user_data.hpp"
 
-#include "json_utils.hpp"
 #include "pel_types.hpp"
-#include "user_data_formats.hpp"
 #ifdef PELTOOL
 #include "user_data_json.hpp"
 #endif
 
 #include <phosphor-logging/lg2.hpp>
-
-#include <format>
 
 namespace openpower
 {
@@ -70,7 +54,7 @@ UserData::UserData(uint16_t componentID, uint8_t subType, uint8_t version,
                    const std::vector<uint8_t>& data)
 {
     _header.id = static_cast<uint16_t>(SectionID::userData);
-    _header.size = Section::flattenedSize() + data.size();
+    _header.size = Section::headerSize() + data.size();
     _header.version = version;
     _header.subType = subType;
     _header.componentID = componentID;
@@ -108,14 +92,13 @@ std::optional<std::string> UserData::getJSON(
 bool UserData::shrink(size_t newSize)
 {
     // minimum size is 4 bytes plus the 8B header
-    if ((newSize < flattenedSize()) &&
-        (newSize >= (Section::flattenedSize() + 4)))
+    if ((newSize < flattenedSize()) && (newSize >= (Section::headerSize() + 4)))
     {
-        auto dataSize = newSize - Section::flattenedSize();
+        auto dataSize = newSize - Section::headerSize();
 
         // Ensure it's 4B aligned
         _data.resize((dataSize / 4) * 4);
-        _header.size = Section::flattenedSize() + _data.size();
+        _header.size = Section::headerSize() + _data.size();
         return true;
     }
 

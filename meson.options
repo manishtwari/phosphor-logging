@@ -4,17 +4,10 @@ option(
     'openpower-pel-extension',
     type: 'feature',
     description: 'Create PELs',
-    value: 'disabled',
+    value: 'enabled',
 )
 
 option('yamldir', type: 'string', description: 'Path to YAML')
-option(
-    'auditlog',
-    type: 'feature',
-    value: 'disabled',
-    description: 'Enable D-Bus Audit Log service',
-)
-
 option(
     'callout_yaml',
     type: 'string',
@@ -54,6 +47,12 @@ option(
     type: 'combo',
     choices: ['dbus', 'journal', 'both'],
     value: 'both',
+)
+
+option(
+    'event-filter',
+    type: 'string',
+    description: 'Path to the event filter JSON file.',
 )
 
 option(

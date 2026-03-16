@@ -73,7 +73,7 @@ class PropertyWatcher : public DBusWatcher
 {
   public:
     PropertyWatcher() = delete;
-    ~PropertyWatcher() = default;
+    ~PropertyWatcher() override = default;
     PropertyWatcher(const PropertyWatcher&) = delete;
     PropertyWatcher& operator=(const PropertyWatcher&) = delete;
     PropertyWatcher(PropertyWatcher&&) = delete;
@@ -129,7 +129,7 @@ class PropertyWatcher : public DBusWatcher
      * Reads the property if it is on D-Bus, and sets up the match
      * objects for the propertiesChanged and interfacesAdded signals.
      *
-     * Unlike the other constructor, this contructor doesn't take the
+     * Unlike the other constructor, this constructor doesn't take the
      * service to use for the property read so it will look it up with
      * an ObjectMapper GetObject call.
      *
@@ -254,7 +254,7 @@ class InterfaceWatcher : public DBusWatcher
 {
   public:
     InterfaceWatcher() = delete;
-    ~InterfaceWatcher() = default;
+    ~InterfaceWatcher() override = default;
     InterfaceWatcher(const InterfaceWatcher&) = delete;
     InterfaceWatcher& operator=(const InterfaceWatcher&) = delete;
     InterfaceWatcher(InterfaceWatcher&&) = delete;

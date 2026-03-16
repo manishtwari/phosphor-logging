@@ -41,5 +41,11 @@ Extensions::DefaultErrorCaps& Extensions::getDefaultErrorCaps()
     return defaultErrorCaps;
 }
 
+EntryReadyFunctions& Extensions::getEntryReadyFunctions()
+{
+    static EntryReadyFunctions entryReadyFunctions{};
+    return entryReadyFunctions;
+}
+
 } // namespace logging
 } // namespace phosphor

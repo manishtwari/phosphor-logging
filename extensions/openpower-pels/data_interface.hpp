@@ -393,7 +393,7 @@ class DataInterfaceBase
      * @param[in] node - The node number the location is on.  Ignored if the
      *                   expanded location code is passed in.
      *
-     * @param[in] expanded - If the location code already has the relevent
+     * @param[in] expanded - If the location code already has the relevant
      *                       VPD fields embedded in it.
      *
      * @return std::vector<std::string> - The inventory D-Bus objects
@@ -493,8 +493,8 @@ class DataInterfaceBase
     virtual std::vector<uint8_t> getRawProgressSRC() const = 0;
 
     /**
-     * @brief Returns the FRUs DI property value hosted on the VINI iterface for
-     * the given location code.
+     * @brief Returns the FRUs DI property value hosted on the VINI interface
+     * for the given location code.
      *
      * @param[in] locationCode - The location code of the FRU
      *
@@ -690,11 +690,11 @@ class DataInterface : public DataInterfaceBase
 {
   public:
     DataInterface() = delete;
-    ~DataInterface() = default;
-    DataInterface(const DataInterface&) = default;
-    DataInterface& operator=(const DataInterface&) = default;
-    DataInterface(DataInterface&&) = default;
-    DataInterface& operator=(DataInterface&&) = default;
+    ~DataInterface() override = default;
+    DataInterface(const DataInterface&) = delete;
+    DataInterface& operator=(const DataInterface&) = delete;
+    DataInterface(DataInterface&&) = delete;
+    DataInterface& operator=(DataInterface&&) = delete;
 
     /**
      * @brief Constructor
@@ -826,7 +826,7 @@ class DataInterface : public DataInterfaceBase
      * @param[in] node - The node number the location is on.  Ignored if the
      *                   expanded location code is passed in.
      *
-     * @param[in] expanded - If the location code already has the relevent
+     * @param[in] expanded - If the location code already has the relevant
      *                       VPD fields embedded in it.
      *
      * @return std::vector<std::string> - The inventory D-Bus objects
@@ -907,8 +907,8 @@ class DataInterface : public DataInterfaceBase
     std::vector<uint8_t> getRawProgressSRC() const override;
 
     /**
-     * @brief Returns the FRUs DI property value hosted on the VINI iterface for
-     * the given location code.
+     * @brief Returns the FRUs DI property value hosted on the VINI interface
+     * for the given location code.
      *
      * @param[in] locationCode - The location code of the FRU
      *
@@ -965,6 +965,15 @@ class DataInterface : public DataInterfaceBase
     DBusPathList getPaths(const DBusInterfaceList& interfaces) const;
 
     /**
+     * @brief Wrapper for the mapper's GetSubTree
+     *
+     * @param[in] interfaces - The desired interfaces
+     *
+     * @return The D-Bus paths.
+     */
+    DBusSubTree getSubTree(const DBusInterfaceList& interfaces) const;
+
+    /**
      * @brief The interfacesAdded callback used on the inventory to
      *        find the D-Bus object that has the motherboard interface.
      *        When the motherboard is found, it then adds a PropertyWatcher
@@ -1012,8 +1021,8 @@ class DataInterface : public DataInterfaceBase
      * @param[in] path - The object path of the inventory item.
      * @param[in] properties - The properties map
      */
-    void notifyPresenceSubsribers(const std::string& path,
-                                  const DBusPropertyMap& properties);
+    void notifyPresenceSubscribers(const std::string& path,
+                                   const DBusPropertyMap& properties);
 
     /**
      * @brief Adds the Ufcs- prefix to the location code passed in
@@ -1083,7 +1092,7 @@ class DataInterface : public DataInterfaceBase
 
     /**
      * @brief Watcher to check "openpower-update-bios-attr-table" service
-     *        is "done" to init PHAL libraires
+     *        is "done" to init PHAL libraries
      */
     std::unique_ptr<sdbusplus::bus::match_t> _systemdMatch;
 

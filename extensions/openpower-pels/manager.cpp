@@ -1,25 +1,17 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
+
+#include "config.h"
+
 #include "manager.hpp"
 
 #include "additional_data.hpp"
 #include "elog_serialize.hpp"
 #include "json_utils.hpp"
+#include "log_id.hpp"
 #include "pel.hpp"
 #include "pel_entry.hpp"
+#include "pel_values.hpp"
 #include "service_indicators.hpp"
 #include "severity.hpp"
 
@@ -33,7 +25,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <locale>
+#include <iostream>
 
 namespace openpower
 {
@@ -61,14 +53,20 @@ constexpr uint32_t bmcFansCompID = 0x2800;
 
 Manager::~Manager()
 {
-    if (_pelFileDeleteFD != -1)
-    {
-        if (_pelFileDeleteWatchFD != -1)
+    auto cleanup = [](int& fd, int& wd) {
+        if (fd != -1)
         {
-            inotify_rm_watch(_pelFileDeleteFD, _pelFileDeleteWatchFD);
+            if (wd != -1)
+            {
+                inotify_rm_watch(fd, wd);
+                wd = -1;
+            }
+            close(fd);
+            fd = -1;
         }
-        close(_pelFileDeleteFD);
-    }
+    };
+
+    cleanup(_pelFileWatchFD, _pelFileWatchWD);
 }
 
 void Manager::create(const std::string& message, uint32_t obmcLogID,
@@ -78,6 +76,12 @@ void Manager::create(const std::string& message, uint32_t obmcLogID,
                      const FFDCEntries& ffdc)
 {
     AdditionalData ad{additionalData};
+
+    // Extract the latest BMC position value
+    if constexpr (USE_BMC_POS_IN_ID || IS_UNIT_TEST)
+    {
+        position::extractBMCPostionFromLogID(obmcLogID);
+    }
 
     // If a PEL was passed in via a filename or in an ESEL,
     // use that.  Otherwise, create one.
@@ -246,7 +250,7 @@ void Manager::addESELPEL(const std::string& esel, uint32_t obmcLogID)
 
     try
     {
-        data = std::move(eselToRawData(esel));
+        data = eselToRawData(esel);
     }
     catch (const std::exception& e)
     {
@@ -570,91 +574,524 @@ void Manager::pruneRepo(sdeventplus::source::EventBase& /*source*/)
     _repoPrunerEventSource.reset();
 }
 
-void Manager::setupPELDeleteWatch()
+void Manager::setupPELFileWatch()
 {
-    _pelFileDeleteFD = inotify_init1(IN_NONBLOCK);
-    if (-1 == _pelFileDeleteFD)
+    _pelFileWatchFD = inotify_init1(IN_NONBLOCK);
+    if (_pelFileWatchFD == -1)
     {
-        auto e = errno;
-        lg2::error("inotify_init1 failed with errno {ERRNO}", "ERRNO", e);
+        lg2::error("inotify_init1(PEL) failed errno={ERRNO}", "ERRNO", errno);
         abort();
     }
 
-    _pelFileDeleteWatchFD = inotify_add_watch(
-        _pelFileDeleteFD, _repo.repoPath().c_str(), IN_DELETE);
-    if (-1 == _pelFileDeleteWatchFD)
+    // DELETE: keep current behavior
+    // MOVED_TO: rsync temp -> final (atomic rename)
+    // Q_OVERFLOW: detect queue overflow
+    uint32_t mask = IN_DELETE | IN_MOVED_TO;
+
+    _pelFileWatchWD =
+        inotify_add_watch(_pelFileWatchFD, _repo.repoPath().c_str(), mask);
+    if (_pelFileWatchWD == -1)
     {
-        auto e = errno;
-        lg2::error("inotify_add_watch failed with errno {ERRNO}", "ERRNO", e);
+        lg2::error("inotify_add_watch(PEL) failed errno={ERRNO}", "ERRNO",
+                   errno);
         abort();
     }
 
-    _pelFileDeleteEventSource = std::make_unique<sdeventplus::source::IO>(
-        _event, _pelFileDeleteFD, EPOLLIN,
-        std::bind(std::mem_fn(&Manager::pelFileDeleted), this,
+    _pelFileWatchEventSource = std::make_unique<sdeventplus::source::IO>(
+        _event, _pelFileWatchFD, EPOLLIN,
+        std::bind(std::mem_fn(&Manager::pelFileChanged), this,
                   std::placeholders::_1, std::placeholders::_2,
                   std::placeholders::_3));
 }
 
-void Manager::pelFileDeleted(sdeventplus::source::IO& /*io*/, int /*fd*/,
-                             uint32_t revents)
+void Manager::pelFileChanged(sdeventplus::source::IO&, int, uint32_t revents)
 {
     if (!(revents & EPOLLIN))
     {
         return;
     }
 
-    // An event for 1 PEL uses 48B. When all PELs are deleted at once,
-    // as many events as there is room for can be handled in one callback.
-    // A size of 2000 will allow 41 to be processed, with additional
-    // callbacks being needed to process the remaining ones.
-    std::array<uint8_t, 2000> data{};
-    auto bytesRead = read(_pelFileDeleteFD, data.data(), data.size());
+    std::array<uint8_t, 64 * 1024> buf{};
+    auto bytesRead = read(_pelFileWatchFD, buf.data(), buf.size());
     if (bytesRead < 0)
     {
-        auto e = errno;
-        lg2::error("Failed reading data from inotify event, errno = {ERRNO}",
-                   "ERRNO", e);
-        abort();
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return;
+        }
+
+        lg2::error("read(inotify PEL) failed errno={ERRNO}", "ERRNO", errno);
+        return;
     }
 
-    auto offset = 0;
-    while (offset < bytesRead)
+    if (bytesRead == 0)
     {
-        auto event = reinterpret_cast<inotify_event*>(&data[offset]);
-        if (event->mask & IN_DELETE)
+        return;
+    }
+
+    size_t off = 0;
+    while (off < static_cast<size_t>(bytesRead))
+    {
+        auto* ev = reinterpret_cast<inotify_event*>(&buf[off]);
+
+        if (ev->mask & IN_Q_OVERFLOW)
         {
-            std::string filename{event->name};
+            lg2::info("pelFileChanged: PEL inotify overflow -> reconcile");
+            // reconcileAfterOverflow();
+        }
+        else if (!(ev->mask & IN_ISDIR) && ev->len)
+        {
+            std::string name{ev->name};
 
-            // Get the PEL ID from the filename and tell the
-            // repo it's been removed, and then delete the BMC
-            // event log if it's there.
-            auto pos = filename.find_first_of('_');
-            if (pos != std::string::npos)
+            if (!name.empty() && name[0] == '.')
             {
-                try
-                {
-                    auto idString = filename.substr(pos + 1);
-                    auto pelID = std::stoul(idString, nullptr, 16);
-
-                    Repository::LogID id{Repository::LogID::Pel(pelID)};
-                    auto removedLogID = _repo.remove(id);
-                    if (removedLogID)
-                    {
-                        _logManager.erase(removedLogID->obmcID.id);
-                    }
-                }
-                catch (const std::exception& e)
-                {
-                    lg2::info("Could not find PEL ID from its filename {NAME}",
-                              "NAME", filename);
-                }
+                // Ignore dot temp files
+            }
+            else if (ev->mask & IN_DELETE)
+            {
+                lg2::info("PEL inotify for the file {FILE} with event DELETE",
+                          "FILE", name);
+                handlePELDelete(name);
+            }
+            else if (ev->mask & IN_MOVED_TO)
+            {
+                handlePELMovedTo(name);
             }
         }
 
-        offset += offsetof(inotify_event, name) + event->len;
+        off += offsetof(inotify_event, name) + ev->len;
     }
 }
+
+
+void Manager::handlePELDelete(const std::string& filename)
+{
+    // lg2::info("handlePELDelete START: FILE={FILE}", "FILE", filename);
+
+    auto pos = filename.find_first_of('_');
+    if (pos == std::string::npos)
+    {
+        lg2::info("Filename does not contain '_' separator: {FILE}", "FILE", filename);
+        return;
+    }
+
+    try
+    {
+        auto idString = filename.substr(pos + 1);
+        auto pelID =
+            static_cast<uint32_t>(std::stoul(idString, nullptr, 16));
+
+        lg2::info("Parsed PEL delete request: FILE={FILE}, PEL_ID={PEL_ID}",
+                  "FILE", filename, "PEL_ID", lg2::hex, pelID);
+
+        Repository::LogID id{Repository::LogID::Pel(pelID)};
+
+        auto removedLogID = _repo.remove(id);
+        if (removedLogID)
+        {
+
+            _logManager.erase(removedLogID->obmcID.id);
+
+            lg2::info(
+                "handlePELDelete DONE: removed PEL and requested event-log erase for OBMC_ID={OBMC_ID}",
+                "OBMC_ID", lg2::hex, removedLogID->obmcID.id);
+        }
+        else
+        {
+            lg2::info("PEL NOT FOUND in repository for PEL_ID={PEL_ID}",
+                         "PEL_ID", lg2::hex, pelID);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        lg2::warning("Could not parse PEL ID from filename {NAME}: {ERROR}",
+                     "NAME", filename, "ERROR", e.what());
+    }
+}
+
+
+
+void Manager::handlePELMovedTo(const std::string& filename)
+{
+    auto pos = filename.find_first_of('_');
+    if (pos == std::string::npos)
+    {
+        lg2::warning("Filename does not contain '_' separator: {FILE}", "FILE",
+                     filename);
+        return;
+    }
+
+    auto path = _repo.repoPath() / filename;
+
+    auto logId =
+        _repo.importOrUpdateFromPELFile(path, /*callAddCallbacks=*/false);
+    if (!logId)
+    {
+        lg2::warning("importOrUpdateFromPELFile failed for {FILE}", "FILE",
+                     filename);
+        return;
+    }
+
+    tryLink(logId->obmcID.id, path.string());
+}
+
+void Manager::setupErrorEntryAddedMatch()
+{
+    namespace rules = sdbusplus::bus::match::rules;
+
+    // _errorEntryAddedMatch = std::make_unique<sdbusplus::bus::match_t>(
+    //     _logManager.getBus(),
+    //     rules::interfacesAdded() +
+    //         rules::argNpath(0, std::string(OBJ_ENTRY) + "/"),
+    //     [this](sdbusplus::message::message& msg) { onErrorEntryAdded(msg); });
+}
+
+void Manager::onErrorEntryAdded(sdbusplus::message::message& msg)
+{
+
+    std::cout << " msg path: " << msg.get_path() << std::endl;
+
+    sdbusplus::message::object_path objPath;
+    std::map<std::string, std::map<std::string, DBusValue>> interfaces;
+
+    try
+    {
+        msg.read(objPath, interfaces);
+    }
+    catch (const std::exception& e)
+    {
+        lg2::error("Failed to parse InterfacesAdded: {ERROR}",
+                   "ERROR", e.what());
+        return;
+    }
+
+    constexpr auto loggingEntryIntf = "xyz.openbmc_project.Logging.Entry";
+
+    // Only react when the base error-log interface was added.
+    if (!interfaces.contains(loggingEntryIntf))
+    {
+        return;
+    }
+
+    const std::string path = static_cast<std::string>(objPath);
+
+    auto pos = path.find_last_of('/');
+    if (pos == std::string::npos)
+    {
+        return;
+    }
+
+    uint32_t obmcLogID{};
+    try
+    {
+        obmcLogID = static_cast<uint32_t>(
+            std::stoul(path.substr(pos + 1), nullptr, 10));
+    }
+    catch (const std::exception&)
+    {
+        return;
+    }
+
+    // Avoid reprocessing if PEL entry is already present for this path.
+    if (_pelEntries.contains(path))
+    {
+        return;
+    }
+
+        std::cout << "obmcLogID: " << obmcLogID << std::endl;
+
+    tryLink(obmcLogID, objPath);
+}
+
+// void Manager::onErrorEntryAdded(sdbusplus::message::message& msg)
+// {
+//     const std::string path = msg.get_path();
+//     constexpr std::string_view prefix = "/xyz/openbmc_project/logging/entry/";
+
+//     if (!path.starts_with(prefix))
+//     {
+//         return;
+//     }
+
+//     try
+//     {
+//         const auto idStr = path.substr(prefix.size());
+//         const auto obmcLogID =
+//             static_cast<uint32_t>(std::stoul(idStr, nullptr, 10));
+
+//         // Optional guard: if PEL D-Bus entry already exists, this could be
+//         // our own interface-added signal. Returning here avoids redundant work.
+//         // if (_pelEntries.find(path) != _pelEntries.end())
+//         // {
+//         //     return;
+//         // }
+
+//         tryLink(obmcLogID);
+//     }
+//     catch (const std::exception&)
+//     {
+//         // Ignore malformed paths
+//     }
+// }
+
+void Manager::onEntryReady(uint32_t obmcId, const std::string& path)
+{   
+    lg2::info("onEntryReady: OBMC_ID={OBMC_ID}", "OBMC_ID", obmcId);
+    tryLink(obmcId, path);
+}
+
+// void Manager::tryLink(uint32_t obmcLogID)
+void Manager::tryLink(uint32_t obmcLogID, [[maybe_unused]]const std::string& path)
+{
+    auto entryPath = std::string(OBJ_ENTRY) + "/" + std::to_string(obmcLogID);
+
+    // lg2::info("=== tryLink START: OBMC_ID={OBMC_ID} ===", "OBMC_ID", lg2::hex,
+            //   obmcLogID);
+
+    // lg2::info(
+    //     "tryLink state: _logManager.entries size={ENTRY_SIZE}, _pelEntries size={PEL_ENTRY_SIZE}",
+    //     "ENTRY_SIZE", _logManager.entries.size(), "PEL_ENTRY_SIZE",
+    //     _pelEntries.size());
+
+    // Need event-log entry
+    auto logIt = _logManager.entries.find(obmcLogID);
+    if (logIt == _logManager.entries.end())
+    {
+        lg2::info(
+            "tryLink: event-log entry not found yet for OBMC_ID={OBMC_ID}, skipping link",
+            "OBMC_ID", lg2::hex, obmcLogID);
+        lg2::info("=== tryLink END (NO_EVENT_ENTRY) ===");
+        return;
+    }
+
+    // lg2::info("tryLink: event-log entry exists for OBMC_ID={OBMC_ID}",
+            //   "OBMC_ID", lg2::hex, obmcLogID);
+
+    // Need PEL mapping
+    Repository::LogID rid{Repository::LogID::Obmc{obmcLogID}};
+    auto attrs = _repo.getPELAttributes(rid);
+    if (!attrs)
+    {
+        lg2::info(
+            "tryLink: repository PEL mapping not found yet for OBMC_ID={OBMC_ID}, skipping link",
+            "OBMC_ID", lg2::hex, obmcLogID);
+        lg2::info("=== tryLink END (NO_PEL_MAPPING) ===");
+        return;
+    }
+
+    auto logId = _repo.getLogID(rid);
+    if (!logId)
+    {
+        // lg2::info(
+        //     "tryLink: repository LogID not found yet for OBMC_ID={OBMC_ID}, skipping link",
+        //     "OBMC_ID", lg2::hex, obmcLogID);
+        lg2::info("=== tryLink END (NO_LOG_ID) ===");
+        return;
+    }
+
+    // const auto& attr = attrs->get();
+    const auto pelID = logId->pelID.id;
+
+    // lg2::info(
+    //     "Both Found: _logManager.entries size={ENTRY_SIZE}, _pelEntries size={PEL_ENTRY_SIZE}",
+    //     "ENTRY_SIZE", _logManager.entries.size(), "PEL_ENTRY_SIZE",
+    //     _pelEntries.size());
+
+    // lg2::info(
+    //     "tryLink: repository PEL mapping exists for PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}, PATH={PATH}",
+    //     "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID, "PATH",
+    //     attr.path.string());
+
+    // Already created PELEntry object?
+    auto pelEntryIt = _pelEntries.find(entryPath);
+    if (pelEntryIt != _pelEntries.end())
+    {
+        lg2::info(
+            "tryLink: PELEntry already exists for PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}, PATH={PATH}, refreshing properties",
+            "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID,
+            "PATH", entryPath);
+
+        // PEL was modified (e.g. ManagementSystemAck changed on active BMC
+        // and synced to passive) - refresh all D-Bus properties from the
+        // updated in-memory attributes.
+        updatePELEntryProperties(obmcLogID);
+
+        lg2::info(
+            "=== tryLink END (REFRESHED_EXISTING_ENTRY): PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID} ===",
+            "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID);
+        return;
+    }
+
+    lg2::info(
+        "tryLink: creating new PELEntry for PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}, PATH={PATH}",
+        "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID, "PATH",
+        entryPath);
+
+    setEntryPath(obmcLogID);
+    // lg2::info(
+    //     "tryLink: setEntryPath done for PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}",
+    //     "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID);
+
+    setServiceProviderNotifyFlag(obmcLogID);
+    // lg2::info(
+    //     "tryLink: setServiceProviderNotifyFlag done for PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}",
+    //     "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID);
+
+    createPELEntry(obmcLogID, false);
+    // lg2::info(
+    //     "tryLink: createPELEntry done for PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID}",
+    //     "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID);
+
+        lg2::info(
+        "Both Found: _logManager.entries size={ENTRY_SIZE}, _pelEntries size={PEL_ENTRY_SIZE}",
+        "ENTRY_SIZE", _logManager.entries.size(), "PEL_ENTRY_SIZE",
+        _pelEntries.size());
+
+    lg2::info(
+        "=== tryLink END (CREATED_NEW_ENTRY): PEL_ID={PEL_ID}, OBMC_ID={OBMC_ID} ===",
+        "PEL_ID", lg2::hex, pelID, "OBMC_ID", lg2::hex, obmcLogID);
+}
+
+void Manager::updatePELEntryProperties(uint32_t obmcLogID)
+{
+    auto entryPath = std::string(OBJ_ENTRY) + "/" + std::to_string(obmcLogID);
+    auto it = _pelEntries.find(entryPath);
+    if (it == _pelEntries.end())
+    {
+        return;
+    }
+
+    Repository::LogID id{Repository::LogID::Obmc(obmcLogID)};
+    auto attributes = _repo.getPELAttributes(id);
+    if (!attributes)
+    {
+        return;
+    }
+
+    namespace pv = openpower::pels::pel_values;
+    auto& attr = attributes.value().get();
+
+    // Use the base class setters directly to update D-Bus properties without
+    // triggering the PELEntry override side-effects (which would rewrite the
+    // PEL file on disk - not desired on passive BMC for synced changes).
+    using PELEntryIface =
+        sdbusplus::server::org::open_power::logging::pel::Entry;
+
+    // Update ManagementSystemAck (HMC ack state)
+    it->second->PELEntryIface::managementSystemAck(
+        attr.hmcState == TransmissionState::acked);
+
+    // Update Hidden flag
+    auto sevType = static_cast<SeverityType>(attr.severity & 0xF0);
+    auto isHidden = true;
+    if (((sevType != SeverityType::nonError) &&
+         attr.actionFlags.test(reportFlagBit) &&
+         !attr.actionFlags.test(hiddenFlagBit)) ||
+        ((sevType == SeverityType::nonError) &&
+         attr.actionFlags.test(serviceActionFlagBit)))
+    {
+        isHidden = false;
+    }
+    it->second->PELEntryIface::hidden(isHidden);
+
+    // Update Subsystem
+    it->second->PELEntryIface::subsystem(
+        pv::getValue(attr.subsystem, pel_values::subsystemValues));
+
+    // Update Deconfig and Guard flags
+    it->second->PELEntryIface::deconfig(attr.deconfig);
+    it->second->PELEntryIface::guard(attr.guard);
+
+    // Update filepath and serviceProvider flags
+    setEntryPath(obmcLogID);
+    setServiceProviderNotifyFlag(obmcLogID);
+}
+
+// void Manager::setupPELDeleteWatch()
+// {
+//     _pelFileDeleteFD = inotify_init1(IN_NONBLOCK);
+//     if (-1 == _pelFileDeleteFD)
+//     {
+//         auto e = errno;
+//         lg2::error("inotify_init1 failed with errno {ERRNO}", "ERRNO", e);
+//         abort();
+//     }
+
+//     _pelFileDeleteWatchFD = inotify_add_watch(
+//         _pelFileDeleteFD, _repo.repoPath().c_str(), IN_DELETE);
+//     if (-1 == _pelFileDeleteWatchFD)
+//     {
+//         auto e = errno;
+//         lg2::error("inotify_add_watch failed with errno {ERRNO}", "ERRNO", e);
+//         abort();
+//     }
+
+//     _pelFileDeleteEventSource = std::make_unique<sdeventplus::source::IO>(
+//         _event, _pelFileDeleteFD, EPOLLIN,
+//         std::bind(std::mem_fn(&Manager::pelFileDeleted), this,
+//                   std::placeholders::_1, std::placeholders::_2,
+//                   std::placeholders::_3));
+// }
+
+// void Manager::pelFileDeleted(sdeventplus::source::IO& /*io*/, int /*fd*/,
+//                              uint32_t revents)
+// {
+//     if (!(revents & EPOLLIN))
+//     {
+//         return;
+//     }
+
+//     // An event for 1 PEL uses 48B. When all PELs are deleted at once,
+//     // as many events as there is room for can be handled in one callback.
+//     // A size of 2000 will allow 41 to be processed, with additional
+//     // callbacks being needed to process the remaining ones.
+//     std::array<uint8_t, 2000> data{};
+//     auto bytesRead = read(_pelFileDeleteFD, data.data(), data.size());
+//     if (bytesRead < 0)
+//     {
+//         auto e = errno;
+//         lg2::error("Failed reading data from inotify event, errno = {ERRNO}",
+//                    "ERRNO", e);
+//         abort();
+//     }
+
+//     auto offset = 0;
+//     while (offset < bytesRead)
+//     {
+//         auto event = reinterpret_cast<inotify_event*>(&data[offset]);
+//         if (event->mask & IN_DELETE)
+//         {
+//             std::string filename{event->name};
+
+//             // Get the PEL ID from the filename and tell the
+//             // repo it's been removed, and then delete the BMC
+//             // event log if it's there.
+//             auto pos = filename.find_first_of('_');
+//             if (pos != std::string::npos)
+//             {
+//                 try
+//                 {
+//                     auto idString = filename.substr(pos + 1);
+//                     auto pelID = std::stoul(idString, nullptr, 16);
+
+//                     Repository::LogID id{Repository::LogID::Pel(pelID)};
+//                     auto removedLogID = _repo.remove(id);
+//                     if (removedLogID)
+//                     {
+//                         _logManager.erase(removedLogID->obmcID.id);
+//                     }
+//                 }
+//                 catch (const std::exception& e)
+//                 {
+//                     lg2::info("Could not find PEL ID from its filename {NAME}",
+//                               "NAME", filename);
+//                 }
+//             }
+//         }
+
+//         offset += offsetof(inotify_event, name) + event->len;
+//     }
+// }
 
 std::tuple<uint32_t, uint32_t> Manager::createPELWithFFDCFiles(
     std::string message, Entry::Level severity,

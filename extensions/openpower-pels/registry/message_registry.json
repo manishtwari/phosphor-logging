@@ -71,7 +71,7 @@
 
             "Documentation": {
                 "Description": "An operation failed due to insufficient permission",
-                "Message": "An operation failed due to unsufficient permission",
+                "Message": "An operation failed due to insufficient permission",
                 "Notes": ["The journal should contain more information"]
             }
         },
@@ -747,7 +747,7 @@
                 "Description": "Error during memory preserving reboot",
                 "Message": "Error during memory preserving reboot",
                 "Notes": [
-                    "Software error occured during memory preserving reboot"
+                    "Software error occurred during memory preserving reboot"
                 ]
             }
         },
@@ -4657,64 +4657,6 @@
         },
 
         {
-            "Name": "xyz.openbmc_project.Fan.Error.Malfunction",
-            "Subsystem": "power_fans",
-            "ComponentID": "0x2800",
-            "Severity": "unrecoverable",
-            "ActionFlags": ["service_action", "report", "call_home"],
-
-            "SRC": {
-                "Type": "11",
-                "ReasonCode": "0x76F5",
-                "Words6To9": {}
-            },
-
-            "Callouts": [
-                {
-                    "System": "com.ibm.Hardware.Chassis.Model.Rainier",
-                    "CalloutList": [{ "Priority": "high", "LocCode": "P0" }]
-                },
-                {
-                    "System": "com.ibm.Hardware.Chassis.Model.Bonnell",
-                    "CalloutList": [{ "Priority": "high", "LocCode": "P0" }]
-                }
-            ],
-
-            "Documentation": {
-                "Description": "The fan control device malfunctioned",
-                "Message": "The fan control device malfunctioned",
-                "Notes": [
-                    "The fan control device is showing unrealistic fan speeds.",
-                    "The fan control FRU is called out high, and the fan will",
-                    "be called out low."
-                ]
-            }
-        },
-
-        {
-            "Name": "xyz.openbmc_project.Fan.Error.CtlrReset",
-            "ComponentID": "0x2800",
-            "Subsystem": "power_fans",
-            "Severity": "non_error",
-            "ActionFlags": ["report"],
-
-            "SRC": {
-                "Type": "11",
-                "ReasonCode": "0x76F6",
-                "Words6To9": {}
-            },
-
-            "Documentation": {
-                "Description": "The fan controller device was reset",
-                "Message": "The fan controller device was reset",
-                "Notes": [
-                    "The fan control device was reset in an attempt to ",
-                    "recover from a malfunction."
-                ]
-            }
-        },
-
-        {
             "Name": "xyz.openbmc_project.Sensor.Threshold.Error.TemperaturePerformanceLossHigh",
             "Subsystem": "power",
             "ComponentID": "0x2800",
@@ -5353,7 +5295,7 @@
                 "Message": "A VPD ecc exception occurred.",
                 "Notes": [
                     "This error occurs when VPD ecc check fails for the FRU.",
-                    "Inventory path for the failed FRU is captured in additonal",
+                    "Inventory path for the failed FRU is captured in additional",
                     "data."
                 ]
             },
@@ -5455,7 +5397,7 @@
                 "Message": "A Dbus internal error occurred.",
                 "Notes": [
                     "This error occurs when Dbus operation fails.",
-                    "Exceptions details are captured in additonal",
+                    "Exceptions details are captured in additional",
                     "data."
                 ]
             },
@@ -5671,10 +5613,12 @@
             "Name": "com.ibm.VPD.Error.FirmwareError",
             "Subsystem": "cec_vpd",
             "ComponentID": "0x4000",
+
             "SRC": {
                 "ReasonCode": "0x400C",
                 "Words6To9": {}
             },
+
             "Callouts": [
                 {
                     "CalloutList": [
@@ -5682,6 +5626,7 @@
                     ]
                 }
             ],
+
             "Documentation": {
                 "Description": "Firmware error.",
                 "Message": "A std runtime failure occurred in VPD Manager code.",
@@ -6967,54 +6912,6 @@
             "Documentation": {
                 "Description": "Correctable ECC memory error collection limit is reached.",
                 "Message": "Correctable ECC memory error collection limit is reached."
-            }
-        },
-        {
-            "Name": "xyz.openbmc_project.acfshell.Started",
-            "Subsystem": "bmc_firmware",
-            "ComponentID": "0xF500",
-
-            "SRC": {
-                "ReasonCode": "0xF501",
-                "Words6To9": {}
-            },
-
-            "Documentation": {
-                "Description": "Acf script started running in the shell",
-                "Message": "Acf script started running in the shell",
-                "Notes": ["The journal should contain more information"]
-            }
-        },
-        {
-            "Name": "xyz.openbmc_project.acfshell.Completed",
-            "Subsystem": "bmc_firmware",
-            "ComponentID": "0xF500",
-
-            "SRC": {
-                "ReasonCode": "0xF502",
-                "Words6To9": {}
-            },
-
-            "Documentation": {
-                "Description": "Acf script ended running in the shell",
-                "Message": "Acf script ended running in the shell",
-                "Notes": ["The journal should contain more information"]
-            }
-        },
-        {
-            "Name": "xyz.openbmc_project.acfshell.Cancelled",
-            "Subsystem": "bmc_firmware",
-            "ComponentID": "0xF500",
-
-            "SRC": {
-                "ReasonCode": "0xF503",
-                "Words6To9": {}
-            },
-
-            "Documentation": {
-                "Description": "Acf script cancelled",
-                "Message": "Acf script ended running in the shell",
-                "Notes": ["The journal should contain more information"]
             }
         },
         {

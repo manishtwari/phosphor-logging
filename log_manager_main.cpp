@@ -37,8 +37,16 @@ int main(int argc, char* argv[])
     // Create a directory to persist errors.
     std::filesystem::create_directories(phosphor::logging::paths::error());
 
+    // Start watching for newly synced error files.
+    iMgr.setupErrorFileWatch();
+
     // Recreate error d-bus objects from persisted errors.
     iMgr.restore();
+
+    lg2::info("Startup functions count: {COUNT}", "COUNT",
+              phosphor::logging::Extensions::getStartupFunctions().size());
+    lg2::info("Create functions count BEFORE startup: {COUNT}", "COUNT",
+              phosphor::logging::Extensions::getCreateFunctions().size());
 
     for (auto& startup : phosphor::logging::Extensions::getStartupFunctions())
     {
@@ -53,6 +61,9 @@ int main(int argc, char* argv[])
         }
     }
 
+    lg2::info("Create functions count AFTER startup: {COUNT}", "COUNT",
+          phosphor::logging::Extensions::getCreateFunctions().size());
+          
     bus.request_name(BUSNAME_LOGGING);
 
     return event.loop();

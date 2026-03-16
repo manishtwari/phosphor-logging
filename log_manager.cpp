@@ -22,9 +22,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <functional>
-#include <future>
 #include <iostream>
 #include <map>
 #include <ranges>
@@ -226,6 +224,8 @@ auto Manager::createEntry(std::string errMsg, Entry::Level errLvl,
         }
     }
 
+    std::cout << "Going to create log entry " << std::endl;
+
     if constexpr (USE_BMC_POS_IN_ID)
     {
         if (!bmcPosMgr->isPositionValid())
@@ -252,6 +252,7 @@ auto Manager::createEntry(std::string errMsg, Entry::Level errLvl,
     }
 
     entryId++;
+    std::cout << "Assigned log entry ID " << entryId << std::endl;
     if (errLvl >= Entry::sevLowerLimit)
     {
         infoErrors.push_back(entryId);
@@ -286,6 +287,8 @@ auto Manager::createEntry(std::string errMsg, Entry::Level errLvl,
     // Add entry before calling the extensions so that they have access to it
     entries.insert(std::make_pair(entryId, std::move(e)));
 
+    std::cout << "calling to the extension now " << std::endl;
+    std::cout << "entries size: " << entries.size() << std::endl;
     doExtensionLogCreate(*entries.find(entryId)->second, ffdc);
 
     // Note: No need to close the file descriptors in the FFDC.
@@ -474,10 +477,16 @@ void Manager::doExtensionLogCreate(const Entry& entry, const FFDCEntries& ffdc)
         assocs.push_back(e);
     }
 
+    std::cout << "outside of the call all " << std::endl;
+    std::cout << "size: " << Extensions::getCreateFunctions().size()
+              << std::endl;
     for (auto& create : Extensions::getCreateFunctions())
     {
         try
         {
+            std::cout << "calling create function for entry " << entry.id()
+                      << std::endl;
+
             create(entry.message(), entry.id(), entry.timestamp(),
                    entry.severity(), entry.additionalData(), assocs, ffdc);
         }
@@ -739,6 +748,267 @@ void Manager::restore()
         }
         lg2::debug("Last entry ID for this BMC is {ID}", "ID", entryId);
     }
+}
+
+void Manager::setupErrorFileWatch()
+{
+    _errorFileWatchFD = inotify_init1(IN_NONBLOCK);
+    if (_errorFileWatchFD == -1)
+    {
+        lg2::error("inotify_init1(errors) failed errno={ERRNO}", "ERRNO",
+                   errno);
+        abort();
+    }
+
+    auto errDir = paths::error();
+
+    uint32_t mask = IN_MOVED_TO | IN_DELETE;
+
+    _errorFileWatchWD =
+        inotify_add_watch(_errorFileWatchFD, errDir.c_str(), mask);
+    if (_errorFileWatchWD == -1)
+    {
+        lg2::error("inotify_add_watch(errors) failed errno={ERRNO}", "ERRNO",
+                   errno);
+        abort();
+    }
+
+    _errorFileWatchEventSource = std::make_unique<sdeventplus::source::IO>(
+        _event, _errorFileWatchFD, EPOLLIN,
+        std::bind(std::mem_fn(&Manager::errorFileChanged), this,
+                  std::placeholders::_1, std::placeholders::_2,
+                  std::placeholders::_3));
+}
+
+void Manager::errorFileChanged(sdeventplus::source::IO&, int, uint32_t revents)
+{
+    if (!(revents & EPOLLIN))
+    {
+        return;
+    }
+
+    std::array<uint8_t, 64 * 1024> buf{};
+    auto bytesRead = read(_errorFileWatchFD, buf.data(), buf.size());
+    if (bytesRead < 0)
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return;
+        }
+
+        lg2::error("read(inotify errors) failed errno={ERRNO}", "ERRNO", errno);
+        return;
+    }
+
+    if (bytesRead == 0)
+    {
+        return;
+    }
+
+    size_t off = 0;
+    while (off < static_cast<size_t>(bytesRead))
+    {
+        auto* ev = reinterpret_cast<inotify_event*>(&buf[off]);
+
+        std::cout << "wd: " << ev->wd << std::endl;
+        std::cout << "mask: " << ev->mask << std::endl;
+        std::cout << "cookie: " << ev->cookie << std::endl;
+        std::cout << "len: " << ev->len << std::endl;
+
+        if (ev->len > 0)
+        {
+            std::cout << "name: " << ev->name << std::endl;
+        }
+
+        if (ev->mask & IN_Q_OVERFLOW)
+        {
+            lg2::info("errorFileChanged: errors inotify overflow -> reconcile");
+            // reconcileAfterOverflow();
+        }
+        else if (!(ev->mask & IN_ISDIR) && ev->len)
+        {
+            try
+            {
+                const auto obmcId =
+                    static_cast<uint32_t>(std::stoul(ev->name, nullptr, 10));
+
+                if (ev->mask & (IN_DELETE))
+                {
+                    lg2::info(
+                        "errorFileChanged: delete detected for OBMC_ID={OBMC_ID}",
+                        "OBMC_ID", obmcId);
+
+                    if (entries.contains(obmcId))
+                    {
+                        erase(obmcId);
+                    }
+                }
+                else if (ev->mask & IN_MOVED_TO)
+                {
+                    if (entries.contains(obmcId))
+                    {
+                        refreshFromDisk(obmcId);
+                    }
+                    else
+                    {
+                        restoreFromDisk(obmcId);
+                    }
+                }
+            }
+            catch (...)
+            {
+                // Ignore non-numeric names
+            }
+        }
+
+        off += offsetof(inotify_event, name) + ev->len;
+    }
+}
+
+bool Manager::restoreFromDisk(uint32_t id)
+{
+    // Entry already restored
+    if (entries.contains(id))
+    {
+        return true;
+    }
+
+    const fs::path path = paths::error() / std::to_string(id);
+
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec))
+    {
+        return false;
+    }
+
+    const std::string objPath =
+        std::string(OBJ_ENTRY) + "/" + std::to_string(id);
+
+    auto entry = std::make_unique<Entry>(busLog, objPath, id, *this);
+
+    if (!deserialize(path, *entry))
+    {
+        return false;
+    }
+
+    if (entry->id() != id)
+    {
+        lg2::error("Sanity check failed while restoring entry {ID}", "ID", id);
+        return false;
+    }
+
+    entry->path(path, true);
+
+    // classify severity
+    auto classify = [&](uint32_t eid, Entry::Level sev) {
+        if (sev >= Entry::sevLowerLimit)
+        {
+            infoErrors.push_back(eid);
+        }
+        else
+        {
+            realErrors.push_back(eid);
+        }
+    };
+
+    classify(id, entry->severity());
+
+    auto [it, inserted] = entries.emplace(id, std::move(entry));
+
+    if (!inserted)
+    {
+        return true;
+    }
+
+    it->second->emit_object_added();
+
+    // for (auto& fn : Extensions::getEntryReadyFunctions())
+    // {
+    //     try
+    //     {
+    //         fn(it->second->id(), it->second->getObjPath());
+    //     }
+    //     catch (const std::exception& e)
+    //     {
+    //         lg2::error("An extension's entryReady function threw: {ERROR}",
+    //                    "ERROR", e);
+    //     }
+    // }
+
+    for (auto& fn : Extensions::getEntryReadyFunctions())
+    {
+        try
+        {
+            fn(id, objPath);
+        }
+        catch (const std::exception& e)
+        {
+            lg2::error("An extension's entryReady function threw: {ERROR}",
+                       "ERROR", e);
+        }
+    }
+
+    // update max id tracking
+    if constexpr (USE_BMC_POS_IN_ID)
+    {
+        if (bmcPosMgr->idContainsCurrentPosition(id))
+        {
+            entryId = std::max(entryId, id);
+        }
+    }
+    else
+    {
+        entryId = std::max(entryId, id);
+    }
+
+    return true;
+}
+
+bool Manager::refreshFromDisk(uint32_t id)
+{
+    auto it = entries.find(id);
+
+    if (it == entries.end())
+    {
+        return restoreFromDisk(id);
+    }
+
+    const fs::path path = paths::error() / std::to_string(id);
+
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec))
+    {
+        return false;
+    }
+
+    if (!deserialize(path, *(it->second)))
+    {
+        return false;
+    }
+
+    it->second->path(path, true);
+
+    auto eraseOnce = [](std::list<uint32_t>& lst, uint32_t value) {
+        const auto pos = std::find(lst.begin(), lst.end(), value);
+        if (pos != lst.end())
+        {
+            lst.erase(pos);
+        }
+    };
+
+    eraseOnce(infoErrors, id);
+    eraseOnce(realErrors, id);
+
+    if (it->second->severity() >= Entry::sevLowerLimit)
+    {
+        infoErrors.push_back(id);
+    }
+    else
+    {
+        realErrors.push_back(id);
+    }
+
+    return true;
 }
 
 std::string Manager::readFWVersion()

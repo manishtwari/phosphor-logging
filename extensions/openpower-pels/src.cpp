@@ -1,23 +1,10 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
+
 #include "src.hpp"
 
 #include "device_callouts.hpp"
 #include "json_utils.hpp"
-#include "paths.hpp"
 #include "pel_values.hpp"
 #ifdef PELTOOL
 #include <Python.h>
@@ -133,7 +120,7 @@ std::optional<std::string> getPythonJSON(std::vector<std::string>& hexwords,
         std::string("srcparsers." + module + "." + module).c_str());
     std::unique_ptr<PyObject, decltype(&pyDecRef)> modNamePtr(pName, &pyDecRef);
     pModule = PyImport_Import(pName);
-    if (pModule == NULL)
+    if (pModule == nullptr)
     {
         pErrStr = "No error string found";
         PyErr_Fetch(&eType, &eValue, &eTraceback);
@@ -367,7 +354,7 @@ SRC::SRC(const message::Entry& regEntry, const AdditionalData& additionalData,
     auto ss = additionalData.getValue("PEL_SUBSYSTEM");
     if (ss)
     {
-        auto eventSubsystem = std::stoul(*ss, NULL, 16);
+        auto eventSubsystem = std::stoul(*ss, nullptr, 16);
         std::string subsystem =
             pv::getValue(eventSubsystem, pel_values::subsystemValues);
         if (subsystem == "invalid")
@@ -385,7 +372,7 @@ SRC::SRC(const message::Entry& regEntry, const AdditionalData& additionalData,
 
     _size = baseSRCSize;
     _size += _callouts ? _callouts->flattenedSize() : 0;
-    _header.size = Section::flattenedSize() + _size;
+    _header.size = Section::headerSize() + _size;
 
     _valid = true;
 }
@@ -435,7 +422,7 @@ void SRC::setMotherboardCCIN(const DataInterfaceBase& dataIface)
     {
         if (ccinString.size() == ccinSize)
         {
-            ccin = std::stoi(ccinString, 0, 16);
+            ccin = std::stoi(ccinString, nullptr, 16);
         }
     }
     catch (const std::exception& e)
@@ -641,35 +628,35 @@ std::optional<std::string> SRC::getCallouts() const
             {
                 jsonInsert(printOut, "Location Code", entry->locationCode(), 3);
             }
-            if (entry->fruIdentity()->getPN().has_value())
+
+            auto pn = entry->fruIdentity()->getPN();
+            if (pn.has_value())
             {
-                jsonInsert(printOut, "Part Number",
-                           entry->fruIdentity()->getPN().value(), 3);
+                jsonInsert(printOut, "Part Number", pn.value(), 3);
             }
-            if (entry->fruIdentity()->getMaintProc().has_value())
+
+            auto proc = entry->fruIdentity()->getMaintProc();
+            if (proc.has_value())
             {
-                jsonInsert(printOut, "Procedure",
-                           entry->fruIdentity()->getMaintProc().value(), 3);
-                if (pv::procedureDesc.find(
-                        entry->fruIdentity()->getMaintProc().value()) !=
+                jsonInsert(printOut, "Procedure", proc.value(), 3);
+                if (pv::procedureDesc.find(proc.value()) !=
                     pv::procedureDesc.end())
                 {
-                    jsonInsert(
-                        printOut, "Description",
-                        pv::procedureDesc.at(
-                            entry->fruIdentity()->getMaintProc().value()),
-                        3);
+                    jsonInsert(printOut, "Description",
+                               pv::procedureDesc.at(proc.value()), 3);
                 }
             }
-            if (entry->fruIdentity()->getCCIN().has_value())
+
+            auto ccin = entry->fruIdentity()->getCCIN();
+            if (ccin.has_value())
             {
-                jsonInsert(printOut, "CCIN",
-                           entry->fruIdentity()->getCCIN().value(), 3);
+                jsonInsert(printOut, "CCIN", ccin.value(), 3);
             }
-            if (entry->fruIdentity()->getSN().has_value())
+
+            auto sn = entry->fruIdentity()->getSN();
+            if (sn.has_value())
             {
-                jsonInsert(printOut, "Serial Number",
-                           entry->fruIdentity()->getSN().value(), 3);
+                jsonInsert(printOut, "Serial Number", sn.value(), 3);
             }
         }
         if (entry->pceIdentity())
@@ -1218,8 +1205,9 @@ void SRC::addDevicePathCallouts(const AdditionalData& additionalData,
             }
             else
             {
-                std::string msg =
-                    "Invalid priority found in dev callout JSON: " +
+                auto msg =
+                    std::string{
+                        "Invalid priority found in dev callout JSON: "} +
                     callout.priority[0];
                 addDebugData(msg);
             }

@@ -21,6 +21,5 @@
     "D100": "bmc hw diags attention handler",
     "E500": "bmc hw diags",
     "F100": "bmc faultlog",
-    "F300": "bmc memory ECC errors",
-    "F500": "bmc acfshell"
+    "F300": "bmc memory ECC errors"
 }

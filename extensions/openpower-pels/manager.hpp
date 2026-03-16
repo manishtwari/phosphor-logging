@@ -34,10 +34,10 @@ class Manager : public PELInterface
 {
   public:
     Manager() = delete;
-    Manager(const Manager&) = default;
-    Manager& operator=(const Manager&) = default;
-    Manager(Manager&&) = default;
-    Manager& operator=(Manager&&) = default;
+    Manager(const Manager&) = delete;
+    Manager& operator=(const Manager&) = delete;
+    Manager(Manager&&) = delete;
+    Manager& operator=(Manager&&) = delete;
 
     /**
      * @brief constructor
@@ -65,7 +65,9 @@ class Manager : public PELInterface
             createPELEntry(entry.first, true);
         }
 
-        setupPELDeleteWatch();
+        // setupPELDeleteWatch();
+        setupPELFileWatch();
+        setupErrorEntryAddedMatch();
 
         _dataIface->subscribeToFruPresent(
             "Manager",
@@ -296,6 +298,8 @@ class Manager : public PELInterface
      */
     static std::string sanitizeFieldForDBus(std::string field);
 
+    void onEntryReady(uint32_t obmcId, const std::string& path);
+
   private:
     /**
      * @brief Adds a received raw PEL to the PEL repository
@@ -389,19 +393,100 @@ class Manager : public PELInterface
     void pruneRepo(sdeventplus::source::EventBase& source);
 
     /**
-     * @brief Sets up an inotify watch to watch for deleted PEL
-     *        files.  Calls pelFileDeleted() when that occurs.
+     * @brief Sets up an inotify watch on the PEL repository directory.
+     *
+     * The watch listens for:
+     *  - IN_DELETE   : when a PEL file is removed
+     *  - IN_MOVED_TO : when a new PEL file appears
      */
-    void setupPELDeleteWatch();
+    void setupPELFileWatch();
 
     /**
-     * @brief Called when the inotify watch put on the repository directory
-     *        detects a PEL file was deleted.
+     * @brief Handles inotify events for the PEL repository directory.
      *
-     * Will tell the Repository class about the deleted PEL, and then tell
-     * the log manager class to delete the corresponding OpenBMC event log.
+     * Dispatches the event to the appropriate handler based on the event type
+     * (e.g. deletion or file move completion).
+     *
+     * @param[in] io - The event source object.
+     * @param[in] fd - File descriptor for the inotify instance.
+     * @param[in] revents - Event flags returned by epoll.
      */
-    void pelFileDeleted(sdeventplus::source::IO& io, int fd, uint32_t revents);
+    void pelFileChanged(sdeventplus::source::IO& io, int fd, uint32_t revents);
+
+    /**
+     * @brief Handles deletion of a PEL file.
+     *
+     * Removes the corresponding PEL from the repository and deletes the
+     * associated OpenBMC event log entry if present.
+     *
+     * @param[in] filename - Name of the deleted PEL file.
+     */
+    void handlePELDelete(const std::string& filename);
+
+    /**
+     * @brief Handles a PEL file appearing in the repository directory.
+     *
+     * This typically occurs when a PEL is transferred via rsync and moved
+     * into its final location. The PEL is then processed and linked with
+     * the corresponding event log entry if available.
+     *
+     * @param[in] filename - Name of the moved PEL file.
+     */
+    void handlePELMovedTo(const std::string& filename);
+
+    /**
+     * @brief Attempts to create a PELEntry D-Bus object.
+     *
+     * A PELEntry is created only when both the OpenBMC event log entry
+     * and the corresponding PEL file exist.
+     *
+     * @param[in] obmcLogID - The OpenBMC event log ID to link with the PEL.
+     */
+    void tryLink(uint32_t obmcLogID, const std::string& path);
+
+
+    /**
+     * @brief Updates all D-Bus PELEntry properties from the current
+     *        in-memory PELAttributes.
+     *
+     * Used when a PEL is modified on the active BMC and synchronized
+     * to the passive BMC via rsync.
+     *
+     * @param[in] obmcLogID - The OpenBMC log ID of the entry to update
+     */
+    void updatePELEntryProperties(uint32_t obmcLogID);
+
+    /**
+     * @brief Sets up a D-Bus match for newly added OpenBMC log entry objects.
+     *
+     * When a base logging entry appears on D-Bus, attempts to link it with
+     * the corresponding PEL if one is already available.
+     */
+    void setupErrorEntryAddedMatch();
+
+    /**
+     * @brief Handles D-Bus InterfacesAdded signals for OpenBMC log entries.
+     *
+     * @param[in] msg - The D-Bus signal message.
+     */
+    void onErrorEntryAdded(sdbusplus::message::message& msg);
+
+    // /**
+    //  * @brief Sets up an inotify watch to watch for deleted PEL
+    //  *        files.  Calls pelFileDeleted() when that occurs.
+    //  */
+    // void setupPELDeleteWatch();
+
+    // /**
+    //  * @brief Called when the inotify watch put on the repository directory
+    //  *        detects a PEL file was deleted.
+    //  *
+    //  * Will tell the Repository class about the deleted PEL, and then tell
+    //  * the log manager class to delete the corresponding OpenBMC event log.
+    //  */
+    // void pelFileDeleted(sdeventplus::source::IO& io, int fd, uint32_t
+    // revents);
+
 
     /**
      * @brief Check if the input PEL should cause a quiesce of the system
@@ -516,6 +601,8 @@ class Manager : public PELInterface
      */
     void hardwarePresent(const std::string& locationCode);
 
+
+
     /**
      * @brief Reference to phosphor-logging's Manager class
      */
@@ -585,21 +672,39 @@ class Manager : public PELInterface
      */
     std::unique_ptr<sdeventplus::source::Defer> _obmcLogDeleteEventSource;
 
-    /**
-     * @brief The even source for watching for deleted PEL files.
-     */
-    std::unique_ptr<sdeventplus::source::IO> _pelFileDeleteEventSource;
+    // /**
+    //  * @brief The even source for watching for deleted PEL files.
+    //  */
+    // std::unique_ptr<sdeventplus::source::IO> _pelFileDeleteEventSource;
 
-    /**
-     * @brief The file descriptor returned by inotify_init1() used
-     *        for watching for deleted PEL files.
-     */
-    int _pelFileDeleteFD = -1;
+    // /**
+    //  * @brief The file descriptor returned by inotify_init1() used
+    //  *        for watching for deleted PEL files.
+    //  */
+    // int _pelFileDeleteFD = -1;
 
     /**
      * @brief The file descriptor returned by inotify_add_watch().
      */
     int _pelFileDeleteWatchFD = -1;
+
+    /**
+     * @brief Event source used to monitor PEL repository directory changes.
+     */
+    std::unique_ptr<sdeventplus::source::IO> _pelFileWatchEventSource;
+
+    /**
+     * @brief File descriptor returned by inotify_init1() for the PEL watcher.
+     */
+    int _pelFileWatchFD = -1;
+
+    /**
+     * @brief Watch descriptor returned by inotify_add_watch() for the PEL
+     * directory.
+     */
+    int _pelFileWatchWD = -1;
+
+    std::unique_ptr<sdbusplus::bus::match_t> _errorEntryAddedMatch;
 };
 
 } // namespace pels

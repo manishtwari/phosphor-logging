@@ -1,18 +1,5 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
 
 #include "data_interface.hpp"
 
@@ -45,7 +32,6 @@ namespace service_name
 constexpr auto objectMapper = "xyz.openbmc_project.ObjectMapper";
 constexpr auto vpdManager = "com.ibm.VPD.Manager";
 constexpr auto ledGroupManager = "xyz.openbmc_project.LED.GroupManager";
-constexpr auto hwIsolation = "org.open_power.HardwareIsolation";
 constexpr auto biosConfigMgr = "xyz.openbmc_project.BIOSConfigManager";
 constexpr auto bootRawProgress = "xyz.openbmc_project.State.Boot.Raw";
 constexpr auto pldm = "xyz.openbmc_project.PLDM";
@@ -68,7 +54,6 @@ constexpr auto enableHostPELs =
     "/xyz/openbmc_project/logging/send_event_logs_to_host";
 constexpr auto vpdManager = "/com/ibm/VPD/Manager";
 constexpr auto logSetting = "/xyz/openbmc_project/logging/settings";
-constexpr auto hwIsolation = "/xyz/openbmc_project/hardware_isolation";
 constexpr auto biosConfigMgr = "/xyz/openbmc_project/bios_config/manager";
 constexpr auto bootRawProgress = "/xyz/openbmc_project/state/boot/raw0";
 constexpr auto systemd = "/org/freedesktop/systemd1";
@@ -283,10 +268,20 @@ DBusPathList DataInterface::getPaths(const DBusInterfaceList& interfaces) const
 
     auto reply = _bus.call(method, dbusTimeout);
 
-    DBusPathList paths;
-    reply.read(paths);
+    auto paths = reply.unpack<DBusPathList>();
 
     return paths;
+}
+
+DBusSubTree DataInterface::getSubTree(const DBusInterfaceList& interfaces) const
+{
+    auto method = _bus.new_method_call(service_name::objectMapper,
+                                       object_path::objectMapper,
+                                       interface::objectMapper, "GetSubTree");
+    method.append(std::string{"/"}, 0, interfaces);
+    auto reply = _bus.call(method, dbusTimeout);
+
+    return reply.unpack<DBusSubTree>();
 }
 
 DBusService DataInterface::getService(const std::string& objectPath,
@@ -300,8 +295,7 @@ DBusService DataInterface::getService(const std::string& objectPath,
 
     auto reply = _bus.call(method, dbusTimeout);
 
-    std::map<DBusService, DBusInterfaceList> response;
-    reply.read(response);
+    auto response = reply.unpack<std::map<DBusService, DBusInterfaceList>>();
 
     if (!response.empty())
     {
@@ -414,20 +408,30 @@ std::string DataInterface::getMotherboardCCIN() const
 
 std::vector<uint8_t> DataInterface::getSystemIMKeyword() const
 {
-    std::vector<uint8_t> systemIM;
+    static std::vector<uint8_t> systemIM;
+
+    if (!systemIM.empty())
+    {
+        return systemIM;
+    }
 
     try
     {
-        auto service =
-            getService(object_path::motherBoardInv, interface::vsbpRecordVPD);
-        if (!service.empty())
-        {
-            DBusValue value;
-            getProperty(service, object_path::motherBoardInv,
-                        interface::vsbpRecordVPD, "IM", value);
+        auto subtree = getSubTree({interface::vsbpRecordVPD});
 
-            systemIM = std::get<std::vector<uint8_t>>(value);
+        if (subtree.empty())
+        {
+            lg2::warning("No VSBP VPD interface found");
+            return systemIM;
         }
+
+        DBusValue imValue;
+        const auto& path = subtree.begin()->first;
+        const auto& interfaceMap = subtree.begin()->second;
+        const auto& service = interfaceMap.begin()->first;
+        getProperty(service, path, interface::vsbpRecordVPD, "IM", imValue);
+
+        systemIM = std::get<std::vector<uint8_t>>(imValue);
     }
     catch (const std::exception& e)
     {
@@ -509,8 +513,7 @@ std::string DataInterface::expandLocationCode(const std::string& locationCode,
 
     auto reply = _bus.call(method, dbusTimeout);
 
-    std::string expandedLocationCode;
-    reply.read(expandedLocationCode);
+    auto expandedLocationCode = reply.unpack<std::string>();
 
     if (!connectorLoc.empty())
     {
@@ -547,8 +550,7 @@ std::vector<std::string> DataInterface::getInventoryFromLocCode(
 
     auto reply = _bus.call(method, dbusTimeout);
 
-    std::vector<sdbusplus::message::object_path> entries;
-    reply.read(entries);
+    auto entries = reply.unpack<std::vector<sdbusplus::message::object_path>>();
 
     std::vector<std::string> paths;
 
@@ -627,17 +629,8 @@ void DataInterface::setCriticalAssociation(const std::string& objectPath) const
 
 std::vector<std::string> DataInterface::getSystemNames() const
 {
-    DBusSubTree subtree;
-    DBusValue names;
+    auto subtree = getSubTree({interface::compatible});
 
-    auto method = _bus.new_method_call(service_name::objectMapper,
-                                       object_path::objectMapper,
-                                       interface::objectMapper, "GetSubTree");
-    method.append(std::string{"/"}, 0,
-                  std::vector<std::string>{interface::compatible});
-    auto reply = _bus.call(method, dbusTimeout);
-
-    reply.read(subtree);
     if (subtree.empty())
     {
         throw std::runtime_error("Compatible interface not on D-Bus");
@@ -650,6 +643,8 @@ std::vector<std::string> DataInterface::getSystemNames() const
         {
             continue;
         }
+
+        DBusValue names;
 
         getProperty(iface->first, path, interface::compatible, "Names", names);
 
@@ -1005,7 +1000,7 @@ void DataInterface::inventoryIfaceAdded(sdbusplus::message_t& msg)
     auto itemIt = interfaces.find(interface::invItem);
     if (itemIt != interfaces.end())
     {
-        notifyPresenceSubsribers(path.str, itemIt->second);
+        notifyPresenceSubscribers(path.str, itemIt->second);
     }
 }
 
@@ -1021,11 +1016,11 @@ void DataInterface::presenceChanged(sdbusplus::message_t& msg)
     }
 
     std::string path = msg.get_path();
-    notifyPresenceSubsribers(path, properties);
+    notifyPresenceSubscribers(path, properties);
 }
 
-void DataInterface::notifyPresenceSubsribers(const std::string& path,
-                                             const DBusPropertyMap& properties)
+void DataInterface::notifyPresenceSubscribers(const std::string& path,
+                                              const DBusPropertyMap& properties)
 {
     auto prop = properties.find("Present");
     if ((prop == properties.end()) || (!std::get<bool>(prop->second)))
@@ -1155,7 +1150,7 @@ void DataInterface::subscribeToSystemdSignals()
     catch (const sdbusplus::exception_t& e)
     {
         lg2::error(
-            "Exception occured while handling JobRemoved systemd signal, "
+            "Exception occurred while handling JobRemoved systemd signal, "
             "exception: {ERROR}",
             "ERROR", e);
     }
@@ -1188,7 +1183,7 @@ void DataInterface::unsubscribeFromSystemdSignals()
     catch (const sdbusplus::exception_t& e)
     {
         lg2::error(
-            "Exception occured while unsubscribing from JobRemoved systemd signal, "
+            "Exception occurred while unsubscribing from JobRemoved systemd signal, "
             "exception: {ERROR}",
             "ERROR", e);
     }

@@ -13,6 +13,9 @@
 #include <xyz/openbmc_project/Logging/Create/server.hpp>
 #include <xyz/openbmc_project/Logging/Entry/server.hpp>
 #include <xyz/openbmc_project/Logging/event.hpp>
+#include <filesystem>
+#include <sdeventplus/event.hpp>
+#include <sdeventplus/source/io.hpp>
 
 #include <list>
 
@@ -75,7 +78,8 @@ class Manager : public details::ServerObject<details::ManagerIface>
      */
     Manager(sdbusplus::bus_t& bus, const char* objPath) :
         details::ServerObject<details::ManagerIface>(bus, objPath), busLog(bus),
-        entryId(0), fwVersion(readFWVersion())
+        entryId(0), fwVersion(readFWVersion()),
+        _event(sdeventplus::Event::get_default())
     {
         if constexpr (USE_BMC_POS_IN_ID)
         {
@@ -119,6 +123,46 @@ class Manager : public details::ServerObject<details::ManagerIface>
      *         representations.
      */
     void restore();
+
+        /** @brief Restore a single error entry from disk into the entries map and
+     *         D-Bus
+     *
+     * @param[in] id - The entry ID to restore
+     * @return true if the entry was successfully restored, false otherwise
+     */
+    bool restoreFromDisk(uint32_t id);
+
+    /** @brief Refresh a single error entry from disk
+     *
+     * - If the entry already exists, update it using the on-disk data.
+     * - If the entry does not exist, restore it from disk.
+     *
+     * @param[in] id - The entry ID to refresh
+     * @return true if the entry was successfully refreshed or restored,
+     *         false otherwise
+     */
+    bool refreshFromDisk(uint32_t id);
+
+    /**
+     * @brief Sets up an inotify watch on the error entry directory.
+     *
+     * Watches for IN_MOVED_TO events which indicate that a new error entry
+     * file has been created (typically via rsync during RBMC synchronization).
+     */
+    void setupErrorFileWatch();
+
+    /**
+     * @brief Handles inotify events for the error entry directory.
+     *
+     * When a new error entry file appears, attempts to link it with the
+     * corresponding PEL file.
+     *
+     * @param[in] io - The event source object.
+     * @param[in] fd - File descriptor for the inotify instance.
+     * @param[in] revents - Event flags returned by epoll.
+     */
+    void errorFileChanged(sdeventplus::source::IO& io, int fd,
+                          uint32_t revents);
 
     /** @brief  Erase all error log entries
      *
@@ -327,6 +371,28 @@ class Manager : public details::ServerObject<details::ManagerIface>
 
     /** @brief Encodes the BMC position in the entryId when enabled */
     std::unique_ptr<BMCPosMgr> bmcPosMgr;
+
+        /**
+     * @brief Event source used to monitor error entry directory changes.
+     */
+    std::unique_ptr<sdeventplus::source::IO> _errorFileWatchEventSource;
+
+    /**
+     * @brief Reference to the sd-event wrapper used to register event sources.
+     */
+    sdeventplus::Event _event;
+
+    /**
+     * @brief File descriptor returned by inotify_init1() for the error entry
+     * watcher.
+     */
+    int _errorFileWatchFD = -1;
+
+    /**
+     * @brief Watch descriptor returned by inotify_add_watch() for the error
+     * entry directory.
+     */
+    int _errorFileWatchWD = -1;
 };
 
 } // namespace internal

@@ -1,18 +1,6 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
+
 #include "config.h"
 
 #include "config_main.h"
@@ -46,22 +34,6 @@ const uint8_t critSysTermSeverity = 0x51;
 using PELFunc = std::function<void(const PEL&, bool hexDump)>;
 message::Registry registry(getPELReadOnlyDataPath() / message::registryFileName,
                            false);
-namespace service
-{
-constexpr auto logging = "xyz.openbmc_project.Logging";
-} // namespace service
-
-namespace interface
-{
-constexpr auto deleteObj = "xyz.openbmc_project.Object.Delete";
-constexpr auto deleteAll = "xyz.openbmc_project.Collection.DeleteAll";
-} // namespace interface
-
-namespace object_path
-{
-constexpr auto logEntry = "/xyz/openbmc_project/logging/entry/";
-constexpr auto logging = "/xyz/openbmc_project/logging";
-} // namespace object_path
 
 std::string pelLogDir()
 {
@@ -70,7 +42,7 @@ std::string pelLogDir()
 
 /**
  * @brief helper function to get PEL commit timestamp from file name
- * @retrun uint64_t - PEL commit timestamp
+ * @return uint64_t - PEL commit timestamp
  * @param[in] std::string - file name
  */
 uint64_t fileNameToTimestamp(const std::string& fileName)
@@ -83,7 +55,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
 
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= (static_cast<uint64_t>(tmp) << 56);
         }
         catch (const std::exception& err)
@@ -93,7 +65,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
         i += 2;
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= (static_cast<uint64_t>(tmp) << 48);
         }
         catch (const std::exception& err)
@@ -103,7 +75,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
         i += 2;
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= (static_cast<uint64_t>(tmp) << 40);
         }
         catch (const std::exception& err)
@@ -113,7 +85,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
         i += 2;
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= (static_cast<uint64_t>(tmp) << 32);
         }
         catch (const std::exception& err)
@@ -123,7 +95,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
         i += 2;
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= (tmp << 24);
         }
         catch (const std::exception& err)
@@ -133,7 +105,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
         i += 2;
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= (tmp << 16);
         }
         catch (const std::exception& err)
@@ -143,7 +115,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
         i += 2;
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= (tmp << 8);
         }
         catch (const std::exception& err)
@@ -153,7 +125,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
         i += 2;
         try
         {
-            auto tmp = std::stoul(token.substr(i, 2), 0, 16);
+            auto tmp = std::stoul(token.substr(i, 2), nullptr, 16);
             bcdTime |= tmp;
         }
         catch (const std::exception& err)
@@ -166,7 +138,7 @@ uint64_t fileNameToTimestamp(const std::string& fileName)
 
 /**
  * @brief helper function to get PEL id from file name
- * @retrun uint32_t - PEL id
+ * @return uint32_t - PEL id
  * @param[in] std::string - file name
  */
 uint32_t fileNameToPELId(const std::string& fileName)
@@ -174,7 +146,7 @@ uint32_t fileNameToPELId(const std::string& fileName)
     uint32_t num = 0;
     try
     {
-        num = std::stoul(fileName.substr(fileName.find("_") + 1), 0, 16);
+        num = std::stoul(fileName.substr(fileName.find("_") + 1), nullptr, 16);
     }
     catch (const std::exception& err)
     {
@@ -233,7 +205,7 @@ std::vector<uint8_t> getFileData(const std::string& name)
 /**
  * @brief Initialize Python interpreter and gather all UD parser modules under
  *        the paths found in Python sys.path and the current user directory.
- *        This is to prevent calling a non-existant module which causes Python
+ *        This is to prevent calling a non-existent module which causes Python
  *        to print an import error message and breaking JSON output.
  *
  * @return std::vector<std::string> Vector of plugins found in filesystem
@@ -797,7 +769,7 @@ std::regex genRegex(std::string& scrubFile)
             std::cerr << "Mismatched bracket ([ or ])\n";
         else if (e.code() == std::regex_constants::error_paren)
         {
-            // to catch return code error_badrepeat when error_paren is retured
+            // to catch return code error_badrepeat when error_paren is returned
             // instead
             size_t pos = pattern.find_first_of("*+?{");
             while (pos != std::string::npos)

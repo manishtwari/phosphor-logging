@@ -1,18 +1,6 @@
-/**
- * Copyright © 2019 IBM Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2019 IBM Corporation
+
 #include "elog_entry.hpp"
 #include "extensions/openpower-pels/generic.hpp"
 #include "extensions/openpower-pels/pel.hpp"
@@ -761,11 +749,11 @@ TEST_F(PELTest, CreateWithFFDCTest)
     // This will be trimmed when added
     std::vector<uint8_t> hugeCustomData(17000, 0x42);
 
-    ffdc.emplace_back(std::move(getJSONFFDC(dir)));
-    ffdc.emplace_back(std::move(getCBORFFDC(dir)));
-    ffdc.emplace_back(std::move(getTextFFDC(dir)));
-    ffdc.emplace_back(std::move(getCustomFFDC(dir, customData)));
-    ffdc.emplace_back(std::move(getCustomFFDC(dir, hugeCustomData)));
+    ffdc.emplace_back(getJSONFFDC(dir));
+    ffdc.emplace_back(getCBORFFDC(dir));
+    ffdc.emplace_back(getTextFFDC(dir));
+    ffdc.emplace_back(getCustomFFDC(dir, customData));
+    ffdc.emplace_back(getCustomFFDC(dir, hugeCustomData));
 
     PEL pel{regEntry, 42,   timestamp, phosphor::logging::Entry::Level::Error,
             ad,       ffdc, dataIface, journal};
@@ -1046,7 +1034,7 @@ TEST_F(PELTest, CreateWithJSONCalloutsTest)
     fs::remove_all(dir);
 }
 
-// Test PELs with symblic FRU callout.
+// Test PELs with symbolic FRU callout.
 TEST_F(PELTest, CreateWithJSONSymblicCalloutTest)
 {
     PelFFDCfile ffdcFile;

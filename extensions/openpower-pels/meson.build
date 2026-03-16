@@ -95,7 +95,7 @@ libpel_dep = declare_dependency(
 log_manager_ext_deps += [libpel_dep, libpldm_dep, nlohmann_json_dep]
 
 log_manager_ext_sources += files(
-    'entry_points.cpp',
+    # 'entry_points.cpp',
     'extended_user_data.cpp',
     'host_notifier.cpp',
     'manager.cpp',
@@ -105,6 +105,9 @@ log_manager_ext_sources += files(
     'src.cpp',
     'user_data.cpp',
 )
+
+# Add this NEW line to force linking:
+# log_manager_ext_args += ['-Wl,--whole-archive', '-Wl,--no-whole-archive']
 
 install_data(
     'registry/message_registry.json',

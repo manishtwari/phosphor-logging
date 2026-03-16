@@ -89,7 +89,7 @@ callouts_gen = custom_target(
     'callouts-gen.hpp'.underscorify(),
     input: [
         'callouts/callouts.py',
-        'callouts/callouts-gen.mako.hpp',
+        'callouts/callouts-gen.hpp.mako',
         get_option('callout_yaml'),
     ],
     output: 'callouts-gen.hpp',
@@ -100,7 +100,7 @@ elog_lookup_gen = custom_target(
     'elog-lookup.cpp'.underscorify(),
     input: files(
         'tools/elog-gen.py',
-        'tools/phosphor-logging/templates/elog-lookup-template.mako.cpp',
+        'tools/phosphor-logging/templates/elog-lookup-template.cpp.mako',
     ),
     output: 'elog-lookup.cpp',
     command: [
@@ -123,7 +123,7 @@ elog_process_gen = custom_target(
     'elog-process-metadata.cpp'.underscorify(),
     input: files(
         'tools/elog-gen.py',
-        'tools/phosphor-logging/templates/elog-process-metadata.mako.cpp',
+        'tools/phosphor-logging/templates/elog-process-metadata.cpp.mako',
     ),
     output: 'elog-process-metadata.cpp',
     command: [
@@ -148,9 +148,6 @@ log_manager_ext_args = []
 
 subdir('extensions')
 subdir('phosphor-rsyslog-config')
-if (get_option('auditlog').allowed())
-    subdir('phosphor-auditlog')
-endif
 
 # Generate daemon.
 log_manager_sources = [
@@ -176,16 +173,25 @@ log_manager_deps = [
     phosphor_logging_dep,
     sdbusplus_dep,
     sdeventplus_dep,
+    declare_dependency(sources: generated_headers),
 ]
-executable(
-    'phosphor-log-manager',
+log_manager_lib = static_library(
+    'log_manager_lib',
     log_manager_sources,
     log_manager_ext_sources,
+    include_directories: include_directories('gen'),
+    dependencies: [log_manager_deps, log_manager_ext_deps],
+    cpp_args: log_manager_ext_args,
+)
+executable(
+    'phosphor-log-manager',
     'log_manager_main.cpp',
+    'extensions/openpower-pels/entry_points.cpp',
     include_directories: include_directories('gen'),
     cpp_args: log_manager_ext_args,
-    dependencies: [log_manager_deps, log_manager_ext_deps],
+    dependencies: [conf_h_dep, log_manager_deps, phosphor_logging_dep],
     install: true,
+    link_with: log_manager_lib,
 )
 
 executable(
@@ -204,13 +210,7 @@ executable(
 executable(
     'log-resolve',
     'log_resolve_main.cpp',
-    dependencies: [
-        CLI11_dep,
-        nlohmann_json_dep,
-        pdi_dep,
-        phosphor_logging_dep,
-        sdbusplus_dep,
-    ],
+    dependencies: [CLI11_dep, pdi_dep, phosphor_logging_dep],
     install: true,
 )
 
