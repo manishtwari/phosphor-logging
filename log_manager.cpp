@@ -55,6 +55,21 @@ inline auto getLevel(const std::string& errMsg)
     return reqLevel;
 }
 
+Manager::~Manager()
+{
+    if constexpr (REDUNDANT_BMC)
+    {
+        if (errDirInotifyFD != -1)
+        {
+            if (errDirWatcherWD != -1)
+            {
+                inotify_rm_watch(errDirInotifyFD, errDirWatcherWD);
+            }
+            close(errDirInotifyFD);
+        }
+    }
+}
+
 int Manager::getRealErrSize()
 {
     return realErrors.size();
@@ -223,7 +238,7 @@ auto Manager::createEntry(std::string errMsg, Entry::Level errLvl,
         }
     }
 
-    if constexpr (USE_BMC_POS_IN_ID)
+    if constexpr (REDUNDANT_BMC)
     {
         if (!bmcPosMgr->isPositionValid())
         {
@@ -716,7 +731,7 @@ void Manager::restore()
         }
     }
 
-    if constexpr (!USE_BMC_POS_IN_ID)
+    if constexpr (!REDUNDANT_BMC)
     {
         if (!entries.empty())
         {
@@ -755,6 +770,216 @@ auto Manager::create(const std::string& message, Entry::Level severity,
                      const FFDCEntries& ffdc) -> sdbusplus::message::object_path
 {
     return createEntry(message, severity, additionalData, ffdc);
+}
+
+void Manager::setupErrorFileWatch()
+{
+    auto errDir = paths::error();
+
+    // In the redundant BMC sync flow, files are written to a temporary path
+    // first and moved into place only after the write completes. Using
+    // IN_MOVED_TO ensures we react only when the finalized file appears in the
+    // target directory.
+    //
+    // IN_DELETE handles synced file removals so the corresponding in-memory
+    // event log entry is also removed.
+    uint32_t mask = IN_MOVED_TO | IN_DELETE;
+
+    if (!util::setupInotifyWatch(errDir, mask, errDirInotifyFD,
+                                 errDirWatcherWD))
+    {
+        abort();
+    }
+
+    errorFileWatchEventSource = std::make_unique<sdeventplus::source::IO>(
+        event, errDirInotifyFD, EPOLLIN,
+        std::bind_front(&Manager::errorFileChanged, this));
+}
+
+void Manager::errorFileChanged(sdeventplus::source::IO&, int, uint32_t revents)
+{
+    if (!(revents & EPOLLIN))
+    {
+        return;
+    }
+
+    // As per inotify(7), sizeof(struct inotify_event) + NAME_MAX + 1 is
+    // sufficient for one worst-case event. Keep a larger buffer so one read
+    // can drain multiple queued events. this size allows up to 240
+    // worst-case events in a single read.
+    std::array<uint8_t, 272 * 240> buf{};
+    const auto bytesRead = read(errDirInotifyFD, buf.data(), buf.size());
+    if (bytesRead < 0)
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return;
+        }
+
+        lg2::error("read(inotify errors) failed errno {ERRNO}", "ERRNO", errno);
+        return;
+    }
+
+    const auto totalBytes = static_cast<size_t>(bytesRead);
+    size_t offset = 0;
+
+    while (offset < totalBytes)
+    {
+        auto* ev = reinterpret_cast<inotify_event*>(&buf[offset]);
+
+        if (ev->len)
+        {
+            try
+            {
+                const auto idNum =
+                    static_cast<uint32_t>(std::stoul(ev->name, nullptr, 10));
+
+                if (ev->mask & IN_MOVED_TO)
+                {
+                    if (entries.contains(idNum))
+                    {
+                        if (!refreshFromDisk(idNum))
+                        {
+                            lg2::error("Failed to refresh entry {ID} from disk",
+                                       "ID", idNum);
+                        }
+                    }
+                    else
+                    {
+                        if (!restoreFromDisk(idNum))
+                        {
+                            lg2::error("Failed to restore entry {ID} from disk",
+                                       "ID", idNum);
+                        }
+                    }
+                }
+                else if (ev->mask & IN_DELETE)
+                {
+                    if (entries.contains(idNum))
+                    {
+                        erase(idNum);
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                lg2::error(
+                    "Could not parse error entry ID from filename {NAME}",
+                    "NAME", ev->name);
+            }
+        }
+
+        offset += offsetof(inotify_event, name) + ev->len;
+    }
+}
+
+bool Manager::restoreFromDisk(uint32_t id)
+{
+    const fs::path path = paths::error() / std::to_string(id);
+
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec))
+    {
+        return false;
+    }
+
+    const std::string objPath =
+        std::string(OBJ_ENTRY) + "/" + std::to_string(id);
+
+    auto entry = std::make_unique<Entry>(busLog, objPath, id, *this);
+
+    if (!deserialize(path, *entry))
+    {
+        lg2::error("Failed to deserialize entry {ID} from {PATH}", "ID", id,
+                   "PATH", path);
+        return false;
+    }
+
+    if (entry->id() != id)
+    {
+        lg2::error(
+            "Sanity check failed while restoring entry EXPECTED_ID={EXPECTED_ID} "
+            "RESTORED_ID={RESTORED_ID}",
+            "EXPECTED_ID", id, "RESTORED_ID", entry->id());
+        return false;
+    }
+
+    entry->path(path, true);
+
+    auto [it, inserted] = entries.emplace(id, std::move(entry));
+
+    if (it->second->severity() >= Entry::sevLowerLimit)
+    {
+        infoErrors.push_back(id);
+    }
+    else
+    {
+        realErrors.push_back(id);
+    }
+
+    it->second->emit_object_added();
+
+    for (auto& func : Extensions::getExtensionLogAssociationFunctions())
+    {
+        try
+        {
+            func(id, objPath);
+        }
+        catch (const std::exception& e)
+        {
+            lg2::error(
+                "An extension's PEL entry link function threw an exception: {ERROR}",
+                "ERROR", e);
+        }
+    }
+
+    if (bmcPosMgr->idContainsCurrentPosition(id))
+    {
+        entryId = std::max(entryId, id);
+    }
+
+    return true;
+}
+
+bool Manager::refreshFromDisk(uint32_t id)
+{
+    auto it = entries.find(id);
+    if (it == entries.end() || !it->second)
+    {
+        lg2::error("Unknown refreshed entry ID {ID}", "ID", id);
+        return false;
+    }
+
+    const fs::path path = paths::error() / std::to_string(id);
+
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec))
+    {
+        return false;
+    }
+
+    // Max uint32_t value
+    const uint32_t tempId = 0xFFFFFFFF;
+    auto tempEntry = std::make_unique<Entry>(
+        busLog, std::string(OBJ_ENTRY) + "/" + std::to_string(tempId), tempId,
+        *this);
+
+    // Read the persisted entry data from disk into the temporary entry
+    if (!deserialize(path, *tempEntry))
+    {
+        lg2::error("Failed to deserialize entry {ID} from {PATH}", "ID", id,
+                   "PATH", path);
+        return false;
+    }
+
+    // Assign properties from the deserialized temp entry using assignment
+    // operator, will only update properties that differ
+    auto& existingEntry = it->second;
+    *existingEntry = *tempEntry;
+
+    existingEntry->path(path, true);
+
+    return true;
 }
 
 } // namespace internal
